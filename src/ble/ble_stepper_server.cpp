@@ -7,8 +7,8 @@
 #include <BLE2902.h>
 
 // ----- Pin configuration -----
-#define ROT_STEP_PIN   7    // Rotational motor STEP
-#define LIN_STEP_PIN   9    // Linear motor STEP
+#define ROT_STEP_PIN   9    // Rotational motor STEP
+#define LIN_STEP_PIN   7    // Linear motor STEP
 #define DIR_PIN        21   // Shared direction pin
 #define SLEEP_PIN      20   // Shared sleep/enable pin (active HIGH)
 #define HOME_PIN        0   // Home Pin (digital, weak pull-up)
@@ -16,17 +16,16 @@
 #define OPTICAL_SENSOR_PIN     5   // Optical position sensor (active LOW)
 
 // ----- Timing -----
-#define PULSE_WIDTH_US    300           // 0.3 ms HIGH pulse
-#define PULSE_INTERVAL_US_DEFAULT 500  // 5 ms between pulse starts (4 ms LOW after pulse)
+#define PULSE_WIDTH_US    100          // 0.3 ms HIGH pulse
+#define PULSE_INTERVAL_US_DEFAULT 1500  // 5 ms between pulse starts (4 ms LOW after pulse)
 
 // ----- Motor steps -----
 #define LINEAR_STEPS      1000
-#define ROTATIONAL_STEPS  1085  // 5370 / 5 (1/5 revolution)
 #define HOMING_MAX_STEPS  12000
 
 // ----- Rotational motor sensor limits -----
-#define ROTATIONAL_SENSOR_SKIP_STEPS 100  // Ignore sensor for first N steps
-#define ROTATIONAL_MAX_STEPS             1000  // Max steps before error
+#define ROTATIONAL_SENSOR_SKIP_STEPS    100  // Ignore sensor for first N steps
+#define ROTATIONAL_MAX_STEPS    500           // Max steps before error
 
 // ----- BLE UUIDs (custom 128-bit) -----
 #define BLE_SERVICE_UUID     "AA000001-1234-1234-1234-1234567890AA"
@@ -62,7 +61,7 @@ static void setupMotorGpio() {
     pinMode(DIR_PIN,       OUTPUT);
     pinMode(SLEEP_PIN,    OUTPUT);
     pinMode(HOME_PIN, INPUT_PULLUP);
-    pinMode(OPTICAL_SENSOR_PIN, INPUT);
+    pinMode(OPTICAL_SENSOR_PIN, INPUT_PULLUP);  // Optical sensor (active LOW)
     pinMode(FAN_PIN,      OUTPUT);
 
     digitalWrite(ROT_STEP_PIN, LOW);

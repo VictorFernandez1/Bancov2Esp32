@@ -210,8 +210,8 @@ class MainWindow(QMainWindow):
 
         interval_layout.addWidget(QLabel("Interval (\u00b5s):"))
         self._interval_spin = QSpinBox()
-        self._interval_spin.setRange(500, 50000)
-        self._interval_spin.setValue(500)
+        self._interval_spin.setRange(300, 50000)
+        self._interval_spin.setValue(1500)
         self._interval_spin.setSingleStep(100)
         self._interval_spin.setEnabled(False)
         interval_layout.addWidget(self._interval_spin)
