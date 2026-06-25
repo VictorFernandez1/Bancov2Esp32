@@ -188,7 +188,7 @@ static void rotationalMotorTask(void* pvParams) {
         if (stopped) {
             statusCharacteristic->setValue("STOPPED");
         } else if (positionReached) {
-            statusCharacteristic->setValue("REACHED_POSITION");
+            statusCharacteristic->setValue("COMPLETE");
         } else {
             statusCharacteristic->setValue("ERROR: DESIRED POSITION NOT REACHED");
         }
@@ -342,7 +342,7 @@ static void rotationalHomingTask(void* /*pvParams*/) {
         if (stopped) {
             statusCharacteristic->setValue("STOPPED");
         } else if (homeFound) {
-            statusCharacteristic->setValue("HOME REACHED");
+            statusCharacteristic->setValue("COMPLETE");
         } else {
             statusCharacteristic->setValue("ERROR: HOME not found after max steps or flags.");
         }
@@ -393,7 +393,7 @@ static void moveInHomeTask(void* /*pvParams*/) {
         if (stopped) {
             statusCharacteristic->setValue("STOPPED");
         } else if (limitReached) {
-            statusCharacteristic->setValue("REACHED_IN_LIMIT");
+            statusCharacteristic->setValue("COMPLETE");
         } else {
             statusCharacteristic->setValue("ERROR: IN limit not reached.");
         }
@@ -442,7 +442,7 @@ static void moveOutHomeTask(void* /*pvParams*/) {
         if (stopped) {
             statusCharacteristic->setValue("STOPPED");
         } else if (limitReached) {
-            statusCharacteristic->setValue("REACHED_OUT_LIMIT");
+            statusCharacteristic->setValue("COMPLETE");
         } else {
             statusCharacteristic->setValue("ERROR: OUT limit not reached.");
         }
