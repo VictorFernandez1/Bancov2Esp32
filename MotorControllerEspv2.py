@@ -160,10 +160,12 @@ class MainWindow(QMainWindow):
 
         self._btn_in   = self._make_cmd_btn("◀  Move In",   "MOVEIN")
         self._btn_out  = self._make_cmd_btn("▶  Move Out",  "MOVEOUT")
-        self._btn_home = self._make_cmd_btn("⌂  Homing",    "HOMING")
+        self._btn_in_home = self._make_cmd_btn("Move In Home",    "MOVEINHOME")
+        self._btn_out_home = self._make_cmd_btn("Move Out Home",   "MOVEOUTHOME")
         linear_layout.addWidget(self._btn_in)
         linear_layout.addWidget(self._btn_out)
-        linear_layout.addWidget(self._btn_home)
+        linear_layout.addWidget(self._btn_in_home)
+        linear_layout.addWidget(self._btn_out_home)
         layout.addWidget(linear_box)
 
         # Rotational motor group
@@ -172,8 +174,10 @@ class MainWindow(QMainWindow):
 
         self._btn_cw  = self._make_cmd_btn("↻  Clockwise",        "MOVECLOCKWISE")
         self._btn_ccw = self._make_cmd_btn("↺  Counterclockwise", "MOVECOUNTERCLOCKWISE")
+        self._btn_rot_home = self._make_cmd_btn("Find Home", "ROTATIONALHOMING")
         rot_layout.addWidget(self._btn_cw)
         rot_layout.addWidget(self._btn_ccw)
+        rot_layout.addWidget(self._btn_rot_home)
         layout.addWidget(rot_box)
 
         # Position sensor group
@@ -241,9 +245,10 @@ class MainWindow(QMainWindow):
         return btn
 
     def _command_buttons(self):
-        return (self._btn_in, self._btn_out, self._btn_home, self._btn_cw, self._btn_ccw,
-            self._btn_fan_on, self._btn_fan_off, self._btn_sensor_query,
-                self._btn_stop, self._btn_set_interval, self._interval_spin)
+        return (self._btn_in, self._btn_out, self._btn_in_home, self._btn_out_home,
+                self._btn_cw, self._btn_ccw, self._btn_sensor_query,
+                self._btn_fan_on, self._btn_fan_off, self._btn_stop,
+                self._btn_set_interval, self._interval_spin, self._btn_rot_home)
 
     # ── Slots (called in Qt main thread) ─────────────────────────────────────
 
