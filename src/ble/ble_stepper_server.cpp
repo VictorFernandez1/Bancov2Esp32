@@ -37,12 +37,15 @@
 #define BLE_SERVICE_UUID     "AA000001-1234-1234-1234-1234567890AA"
 #define BLE_CMD_CHAR_UUID    "AA000002-1234-1234-1234-1234567890AA"
 #define BLE_STATUS_CHAR_UUID "AA000003-1234-1234-1234-1234567890AA"
+#define BLE_TEMP_CHAR_UUID   "AA000004-1234-1234-1234-1234567890AA"
 
 // ----- Global state -----
 static volatile bool     motorBusy      = false;
 static volatile bool     stopRequested  = false;
 static volatile uint32_t pulseIntervalUs = PULSE_INTERVAL_US_ROTATIONAL;
 static BLECharacteristic* statusCharacteristic = nullptr;
+static BLECharacteristic* temperatureCharacteristic = nullptr;
+static volatile bool isClientConnected = false;
 
 // ----- Task parameter structs -----
 struct MotorTaskParams {
@@ -488,6 +491,18 @@ static void sendStatus(const char* msg) {
     }
 }
 
+void publishTemperatureC(float temperatureC) {
+    if (!temperatureCharacteristic || !isClientConnected) {
+        return;
+    }
+
+    char payload[20] = {0};
+    snprintf(payload, sizeof(payload), "%.2f C", temperatureC);
+
+    temperatureCharacteristic->setValue(payload);
+    temperatureCharacteristic->notify();
+}
+
 // ============================================================
 //  BLE callbacks
 // ============================================================
@@ -576,10 +591,12 @@ class CommandCallback : public BLECharacteristicCallbacks {
 class ConnectionCallback : public BLEServerCallbacks {
     void onConnect(BLEServer* server) override {
         Serial.println("Client connected.");
+        isClientConnected = true;
     }
 
     void onDisconnect(BLEServer* server) override {
         Serial.println("Client disconnected. Restarting advertising...");
+        isClientConnected = false;
         BLEDevice::startAdvertising();
     }
 };
@@ -611,6 +628,13 @@ void initBleStepperServer() {
         BLECharacteristic::PROPERTY_NOTIFY
     );
     statusCharacteristic->addDescriptor(new BLE2902());
+
+    temperatureCharacteristic = service->createCharacteristic(
+        BLE_TEMP_CHAR_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+    );
+    temperatureCharacteristic->addDescriptor(new BLE2902());
+    temperatureCharacteristic->setValue("0.00 C");
 
     service->start();
 
