@@ -18,15 +18,18 @@
 
 // ----- Timing -----
 #define PULSE_WIDTH_US    300          // 0.3 ms HIGH pulse
-#define PULSE_INTERVAL_US_ROTATIONAL 1500  //  ms between pulse starts (4 ms LOW after pulse)
-#define PULSE_INTERVAL_US_LINEAR  800  //  ms between pulse starts for linear motor (4 ms LOW after pulse)
+#define PULSE_INTERVAL_US_ROTATIONAL 2000  //  ms between pulse starts (4 ms LOW after pulse)
+#define PULSE_INTERVAL_US_LINEAR  500  //  ms between pulse starts for linear motor (4 ms LOW after pulse)
+#define PULSE_INTERVAL_US_HOMING    5000  //  ms between pulse starts for rotational homing (4 ms LOW after pulse)
 
 // ----- Motor steps -----
 #define LINEAR_STEPS      5000
 #define LIMIT_SWITCH_MAX_STEPS  25000  // Max steps for limit switch movements
+#define IN_CLOSING_STEPS  100     // Extra steps to ensure fully in home position after limit switch
 
 // ----- Rotational motor sensor limits -----
-#define ROTATIONAL_SENSOR_SKIP_STEPS    60  // Ignore sensor for first N steps
+#define ROTATIONAL_SENSOR_SKIP_STEPS    80  // Ignore sensor for first N steps
+#define ROTATIONAL_SENSOR_HOME_STEPS  63  // Steps to move clockwise after finding home flag to ensure we are centered inside the home flag
 #define ROTATIONAL_MAX_STEPS    600         // Max steps before error
 #define MAX_FLAGS_TO_FIND_HOME  12         // Max flags to find home position
 
@@ -303,8 +306,10 @@ static void rotationalHomingTask(void* /*pvParams*/) {
     // If home found, we will move counterclockwise until optical sensor goes HIGH (to ensure we are past the home flag)
 
     if (homeFound) {
+        pulseIntervalUs = PULSE_INTERVAL_US_HOMING;  // Ensure we don't underflow in delayMicroseconds()
 
-        delayMicroseconds(100000);
+
+        delayMicroseconds(1000000);
         for (uint16_t i = 0; i < ROTATIONAL_MAX_STEPS; i++) {
             if (stopRequested) {
                 stopped = true;
@@ -319,10 +324,10 @@ static void rotationalHomingTask(void* /*pvParams*/) {
             delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
         }
 
-       // Now we move clockwise for a number of steps equal to ROTATIONAL_SENSOR_SKIP_STEPS to ensure we are centered inside the home flag
+       // Now we move clockwise for a number of steps equal to ROTATIONAL_SENSOR_HOME_STEPS to ensure we are centered inside the home flag
         digitalWrite(DIR_PIN, LOW);  // Clockwise (DIR LOW)
         delayMicroseconds(100);         // DIR setup time before first STEP
-        for (uint16_t i = 0; i < ROTATIONAL_SENSOR_SKIP_STEPS; i++) {
+        for (uint16_t i = 0; i < ROTATIONAL_SENSOR_HOME_STEPS; i++) {
             if (stopRequested) {
                 stopped = true;
                 break;
@@ -333,7 +338,7 @@ static void rotationalHomingTask(void* /*pvParams*/) {
 
 
     }
-
+    pulseIntervalUs = PULSE_INTERVAL_US_ROTATIONAL;  // Reset to default for future movements
 
     disableMotors();
     stopRequested = false;
@@ -384,6 +389,19 @@ static void moveInHomeTask(void* /*pvParams*/) {
 
         generateStepPulse(LIN_STEP_PIN);
         delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
+    }
+
+    // After reaching the limit switch, we move a few more steps to ensure we are fully in the home position
+
+    if(limitReached) {
+        for (uint16_t i = 0; i < IN_CLOSING_STEPS; i++) {  // Move 10 more steps
+            if (stopRequested) {
+                stopped = true;
+                break;
+            }
+            generateStepPulse(LIN_STEP_PIN);
+            delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
+        }
     }
 
     disableMotors();

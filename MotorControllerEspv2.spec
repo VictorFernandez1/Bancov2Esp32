@@ -5,7 +5,7 @@ Generates a single executable with windowed mode (no console)
 """
 
 a = Analysis(
-    ['MotorControllerEsp.py'],
+    ['MotorControllerEspv2.py'],
     pathex=[],
     binaries=[],
     datas=[],
