@@ -312,15 +312,34 @@ class MainWindow(QMainWindow):
 
         # Rotational motor group
         rot_box    = QGroupBox("Rotational Motor")
-        rot_layout = QHBoxLayout(rot_box)
+        rot_layout = QVBoxLayout(rot_box)
         rot_layout.setContentsMargins(8, 8, 8, 8)
 
-        self._btn_cw  = self._make_cmd_btn("↻  Clockwise",        "MOVECLOCKWISE")
-        self._btn_ccw = self._make_cmd_btn("↺  Counterclockwise", "MOVECOUNTERCLOCKWISE")
+        rot_btn_row = QHBoxLayout()
+        self._btn_cw  = QPushButton("↻  Clockwise")
+        self._btn_cw.setFixedHeight(36)
+        self._btn_cw.setEnabled(False)
+        self._btn_ccw = QPushButton("↺  Counterclockwise")
+        self._btn_ccw.setFixedHeight(36)
+        self._btn_ccw.setEnabled(False)
+        rot_btn_row.addWidget(self._btn_cw)
+        rot_btn_row.addWidget(self._btn_ccw)
+        rot_layout.addLayout(rot_btn_row)
+
+        rot_pos_row = QHBoxLayout()
+        rot_pos_row.addWidget(QLabel("Position:"))
+        self._pos_spin = QSpinBox()
+        self._pos_spin.setRange(1, 12)
+        self._pos_spin.setValue(1)
+        self._pos_spin.setEnabled(False)
+        rot_pos_row.addWidget(self._pos_spin)
         self._btn_rot_home = self._make_cmd_btn("Find Home", "ROTATIONALHOMING")
-        rot_layout.addWidget(self._btn_cw)
-        rot_layout.addWidget(self._btn_ccw)
-        rot_layout.addWidget(self._btn_rot_home)
+        rot_pos_row.addWidget(self._btn_rot_home)
+        rot_layout.addLayout(rot_pos_row)
+
+        self._btn_cw.clicked.connect(lambda: self._worker.send_command(f"MOVECLOCKWISE:{self._pos_spin.value()}"))
+        self._btn_ccw.clicked.connect(lambda: self._worker.send_command(f"MOVECOUNTERCLOCKWISE:{self._pos_spin.value()}"))
+
         left_col.addWidget(rot_box)
 
         # Utility row: Sensor + Fan + Stop + Interval
@@ -423,7 +442,8 @@ class MainWindow(QMainWindow):
         return (self._btn_in, self._btn_out, self._btn_in_home, self._btn_out_home,
                 self._btn_cw, self._btn_ccw, self._btn_sensor_query,
                 self._btn_fan_on, self._btn_fan_off, self._btn_stop,
-                self._btn_set_interval, self._interval_spin, self._btn_rot_home)
+                self._btn_set_interval, self._interval_spin, self._btn_rot_home,
+                self._pos_spin)
 
     # ── Slots (called in Qt main thread) ─────────────────────────────────────
 

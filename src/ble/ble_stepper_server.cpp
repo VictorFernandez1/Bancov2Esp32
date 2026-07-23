@@ -29,9 +29,12 @@
 
 // ----- Rotational motor sensor limits -----
 #define ROTATIONAL_SENSOR_SKIP_STEPS    80  // Ignore sensor for first N steps
-#define ROTATIONAL_SENSOR_HOME_STEPS  63  // Steps to move clockwise after finding home flag to ensure we are centered inside the home flag
+#define ROTATIONAL_SENSOR_HOME_STEPS  63    // Steps to move clockwise after finding home flag to ensure we are centered inside the home flag
 #define ROTATIONAL_MAX_STEPS    600         // Max steps before error
-#define MAX_FLAGS_TO_FIND_HOME  12         // Max flags to find home position
+#define MAX_FLAGS_TO_FIND_HOME  12          // Max flags to find home position
+
+// ----- Position-specific centering steps (indexed 0-11) -----
+static const uint16_t POSITION_STEPS[12] = { 0, 25, 20, 20, 15, 0, 0, 0, 0, 0, 0, 0};
 
 // ----- BLE UUIDs (custom 128-bit) -----
 #define BLE_SERVICE_UUID     "AA000001-1234-1234-1234-1234567890AA"
@@ -58,6 +61,7 @@ struct RotationalMotorTaskParams {
     uint8_t  stepPin;
     bool     dirHigh;  // true → DIR HIGH, false → DIR LOW
     uint8_t  sensorPin;  // GPIO pin for optical sensor
+    uint8_t  position;   // 1-12, selects centering steps from POSITION_STEPS
 };
 
 // ============================================================
@@ -148,9 +152,9 @@ static void rotationalMotorTask(void* pvParams) {
     delayMicroseconds(1000);  // A4988 wake-up time after SLEEP→HIGH
     digitalWrite(DIR_PIN, params->dirHigh ? HIGH : LOW);
     delayMicroseconds(1);     // DIR setup time before first STEP
-    if (pulseIntervalUs < PULSE_INTERVAL_US_ROTATIONAL ) {
-        pulseIntervalUs = PULSE_INTERVAL_US_ROTATIONAL;  // Ensure we don't underflow in delayMicroseconds()
-    }
+
+    pulseIntervalUs = PULSE_INTERVAL_US_ROTATIONAL;
+
 
     bool stopped = false;
     bool positionReached = false;
@@ -178,6 +182,37 @@ static void rotationalMotorTask(void* pvParams) {
             // Check if sensor pin went LOW (position reached)
             if (digitalRead(params->sensorPin) == LOW) {
                 positionReached = true;
+                // Phase 3: Move a few more steps until sensor pin goes high again.
+
+                pulseIntervalUs = PULSE_INTERVAL_US_HOMING;  // Low speed.
+                for (uint16_t j = 0; j < ROTATIONAL_SENSOR_SKIP_STEPS; j++) {
+                    if (stopRequested) {
+                        stopped = true;
+                        break;
+                    }
+                    if (digitalRead(params->sensorPin) == HIGH) {
+                        // Sensor pin went HIGH again. Now we move back POSITION_STEPS[position] steps to center.
+
+                        digitalWrite(DIR_PIN, !params->dirHigh ? HIGH : LOW);   // toggle dir pin
+                        for (uint16_t k = 0; k < POSITION_STEPS[params->position]; k++) {
+                            if (stopRequested) {
+                                stopped = true;
+                                break;
+                            }
+                            generateStepPulse(params->stepPin);
+                            delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
+                        }
+
+                        break;
+
+                    }
+                    generateStepPulse(params->stepPin);
+                    delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
+                    stepCount++;
+                }
+
+
+
                 break;
             }
 
@@ -186,6 +221,8 @@ static void rotationalMotorTask(void* pvParams) {
             stepCount++;
         }
     }
+
+
 
     disableMotors();
     stopRequested = false;
@@ -206,8 +243,8 @@ static void rotationalMotorTask(void* pvParams) {
     vTaskDelete(NULL);
 }
 
-static void launchRotationalMotorTask(uint8_t stepPin, bool dirHigh) {
-    auto* params = new RotationalMotorTaskParams{stepPin, dirHigh, OPTICAL_SENSOR_PIN};
+static void launchRotationalMotorTask(uint8_t stepPin, bool dirHigh, uint8_t position) {
+    auto* params = new RotationalMotorTaskParams{stepPin, dirHigh, OPTICAL_SENSOR_PIN, position};
     stopRequested = false;
     motorBusy = true;
     xTaskCreate(rotationalMotorTask, "rotationalMotorTask", 2048, params, 1, NULL);
@@ -568,12 +605,18 @@ class CommandCallback : public BLECharacteristicCallbacks {
         } else if (cmd == "MOVEOUTHOME") {
             sendStatus("OK");
             launchMoveOutHomeTask();  // DIR LOW = OUT, monitored by OUT_LIMIT_PIN
-        } else if (cmd == "MOVECLOCKWISE") {
+        } else if (cmd.startsWith("MOVECLOCKWISE")) {
+            uint8_t pos = 1;
+            int colonIdx = cmd.indexOf(':');
+            if (colonIdx >= 0) pos = constrain(cmd.substring(colonIdx + 1).toInt(), 1, 12);
             sendStatus("OK");
-            launchRotationalMotorTask(ROT_STEP_PIN, false);  // DIR LOW  = CW, sensor-aware
-        } else if (cmd == "MOVECOUNTERCLOCKWISE") {
+            launchRotationalMotorTask(ROT_STEP_PIN, false, pos);  // DIR LOW  = CW, sensor-aware
+        } else if (cmd.startsWith("MOVECOUNTERCLOCKWISE")) {
+            uint8_t pos = 1;
+            int colonIdx = cmd.indexOf(':');
+            if (colonIdx >= 0) pos = constrain(cmd.substring(colonIdx + 1).toInt(), 1, 12);
             sendStatus("OK");
-            launchRotationalMotorTask(ROT_STEP_PIN, true);   // DIR HIGH = CCW, sensor-aware
+            launchRotationalMotorTask(ROT_STEP_PIN, true, pos);   // DIR HIGH = CCW, sensor-aware
         }else if (cmd == "ROTATIONALHOMING") {
             sendStatus("OK");
             launchRotationalHomingTask();  // DIR HIGH = CCW, finds HOME flag
