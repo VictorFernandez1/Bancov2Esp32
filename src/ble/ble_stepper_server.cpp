@@ -24,17 +24,19 @@
 
 // ----- Motor steps -----
 #define LINEAR_STEPS      5000
-#define LIMIT_SWITCH_MAX_STEPS  25000  // Max steps for limit switch movements
-#define IN_CLOSING_STEPS  100     // Extra steps to ensure fully in home position after limit switch
+#define LIMIT_SWITCH_MAX_STEPS  27000  // Max steps for limit switch movements
+#define IN_CLOSING_STEPS  0      // Extra steps to ensure fully in home position after limit switch
 
 // ----- Rotational motor sensor limits -----
-#define ROTATIONAL_SENSOR_SKIP_STEPS    80  // Ignore sensor for first N steps
-#define ROTATIONAL_SENSOR_HOME_STEPS  63    // Steps to move clockwise after finding home flag to ensure we are centered inside the home flag
+#define ROTATIONAL_SENSOR_SKIP_STEPS    100  // Ignore sensor for first N steps
+#define ROTATIONAL_SENSOR_HOME_STEPS  70    // Steps to move clockwise after finding home flag to ensure we are centered inside the home flag
 #define ROTATIONAL_MAX_STEPS    600         // Max steps before error
 #define MAX_FLAGS_TO_FIND_HOME  12          // Max flags to find home position
 
 // ----- Position-specific centering steps (indexed 0-11) -----
-static const uint16_t POSITION_STEPS[12] = { 0, 25, 20, 20, 15, 0, 0, 0, 0, 0, 0, 0};
+//static const uint16_t POSITION_STEPS[12] = { 0, 25, 20, 20, 15, 0, 0, 0, 0, 0, 0, 0};
+/////////////////////////////////////////// 1   2   3   4   5   6   7   8   9  10  11  12
+static const uint16_t POSITION_STEPS[12] = { 0, 25, 25, 20, 20, 0,  0,  0,  0,  0, 0,  22 };
 
 // ----- BLE UUIDs (custom 128-bit) -----
 #define BLE_SERVICE_UUID     "AA000001-1234-1234-1234-1234567890AA"
@@ -194,7 +196,7 @@ static void rotationalMotorTask(void* pvParams) {
                         // Sensor pin went HIGH again. Now we move back POSITION_STEPS[position] steps to center.
 
                         digitalWrite(DIR_PIN, !params->dirHigh ? HIGH : LOW);   // toggle dir pin
-                        for (uint16_t k = 0; k < POSITION_STEPS[params->position]; k++) {
+                        for (uint16_t k = 0; k < POSITION_STEPS[params->position-1]; k++) {
                             if (stopRequested) {
                                 stopped = true;
                                 break;
@@ -434,7 +436,7 @@ static void moveInHomeTask(void* /*pvParams*/) {
     // After reaching the limit switch, we move a few more steps to ensure we are fully in the home position
 
     if(limitReached) {
-        for (uint16_t i = 0; i < IN_CLOSING_STEPS; i++) {  // Move 10 more steps
+        for (uint16_t i = 0; i < IN_CLOSING_STEPS; i++) {  // Move  more step to ensure we are fully in the home position
             if (stopRequested) {
                 stopped = true;
                 break;
