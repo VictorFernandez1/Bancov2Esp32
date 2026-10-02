@@ -10,33 +10,33 @@
 #define ROT_STEP_PIN   9    // Rotational motor STEP
 #define LIN_STEP_PIN   7    // Linear motor STEP
 #define DIR_PIN        21   // Shared direction pin
-#define SLEEP_PIN      20   // Shared sleep/enable pin (active HIGH)
+#define SLEEP_PIN      20   // Shared sleep/enable pin (active LOW: LOW = enabled, HIGH = sleep)
 #define OUT_LIMIT_PIN   0   // OUT limit switch (active LOW)
 #define IN_LIMIT_PIN    1   // IN limit switch (active LOW)
 #define FAN_PIN        2    // Fan control pin (active High)
 #define OPTICAL_SENSOR_PIN     4   // Optical position sensor (active LOW)
 
 // ----- Timing -----
-#define PULSE_WIDTH_US    300          // 0.3 ms HIGH pulse
-#define PULSE_INTERVAL_US_ROTATIONAL 2000  //  ms between pulse starts (4 ms LOW after pulse)
-#define PULSE_INTERVAL_US_LINEAR  500  //  ms between pulse starts for linear motor (4 ms LOW after pulse)
-#define PULSE_INTERVAL_US_HOMING    5000  //  ms between pulse starts for rotational homing (4 ms LOW after pulse)
+#define PULSE_WIDTH_US    90          // 0.3 ms HIGH pulse
+#define PULSE_INTERVAL_US_ROTATIONAL 200  //  ms between pulse starts (4 ms LOW after pulse)
+#define PULSE_INTERVAL_US_LINEAR  100  //  ms between pulse starts for linear motor (4 ms LOW after pulse)
+#define PULSE_INTERVAL_US_HOMING    5000/8  //  ms between pulse starts for rotational homing (4 ms LOW after pulse)
 
 // ----- Motor steps -----
 #define LINEAR_STEPS      5000
-#define LIMIT_SWITCH_MAX_STEPS  27000  // Max steps for limit switch movements
-#define IN_CLOSING_STEPS  0      // Extra steps to ensure fully in home position after limit switch
+#define LIMIT_SWITCH_MAX_STEPS  80000  // Max steps for limit switch movements
+#define IN_CLOSING_STEPS  400      // Extra steps to ensure fully in home position after limit switch
 
 // ----- Rotational motor sensor limits -----
-#define ROTATIONAL_SENSOR_SKIP_STEPS    100  // Ignore sensor for first N steps
-#define ROTATIONAL_SENSOR_HOME_STEPS  70    // Steps to move clockwise after finding home flag to ensure we are centered inside the home flag
-#define ROTATIONAL_MAX_STEPS    600         // Max steps before error
+#define ROTATIONAL_SENSOR_SKIP_STEPS    110*8  // Ignore sensor for first N steps
+#define ROTATIONAL_SENSOR_HOME_STEPS  90*8    // Steps to move clockwise after finding home flag to ensure we are centered inside the home flag
+#define ROTATIONAL_MAX_STEPS    600*8         // Max steps before error
 #define MAX_FLAGS_TO_FIND_HOME  12          // Max flags to find home position
 
 // ----- Position-specific centering steps (indexed 0-11) -----
-//static const uint16_t POSITION_STEPS[12] = { 0, 25, 20, 20, 15, 0, 0, 0, 0, 0, 0, 0};
+//static const uint16_t POSITION_STEPS[12] = { 0, 25, 25, 20, 20, 0,  0,  0,  0,  0, 0,  22 }; //Juice-1 con driver A4988
 /////////////////////////////////////////// 1   2   3   4   5   6   7   8   9  10  11  12
-static const uint16_t POSITION_STEPS[12] = { 0, 25, 25, 20, 20, 0,  0,  0,  0,  0, 0,  22 };
+static const uint16_t POSITION_STEPS[12] = { 0, 0,  0,  0, 20, 100,200,350,350,250,100,100 };
 
 // ----- BLE UUIDs (custom 128-bit) -----
 #define BLE_SERVICE_UUID     "AA000001-1234-1234-1234-1234567890AA"
@@ -83,7 +83,7 @@ static void setupMotorGpio() {
     digitalWrite(ROT_STEP_PIN, LOW);
     digitalWrite(LIN_STEP_PIN, LOW);
     digitalWrite(DIR_PIN,      LOW);
-    digitalWrite(SLEEP_PIN,    LOW);   // active HIGH → LOW = disabled
+    digitalWrite(SLEEP_PIN,    HIGH);   // active LOW → HIGH = sleep/disabled
     digitalWrite(FAN_PIN,     LOW);    // active HIGH → LOW = disabled
 
     Serial.println("Motor GPIO initialized:");
@@ -96,8 +96,8 @@ static void generateStepPulse(uint8_t stepPin) {
     digitalWrite(stepPin, LOW);
 }
 
-static void enableMotors()  { digitalWrite(SLEEP_PIN, HIGH); }
-static void disableMotors() { digitalWrite(SLEEP_PIN, LOW);  }
+static void enableMotors()  { digitalWrite(SLEEP_PIN, LOW);  }
+static void disableMotors() { digitalWrite(SLEEP_PIN, HIGH); }
 
 // ============================================================
 //  Motor task (FreeRTOS — replaces Python threads)
@@ -193,9 +193,9 @@ static void rotationalMotorTask(void* pvParams) {
                         break;
                     }
                     if (digitalRead(params->sensorPin) == HIGH) {
-                        // Sensor pin went HIGH again. Now we move back POSITION_STEPS[position] steps to center.
+                        // Sensor pin went HIGH again. Now we move some more POSITION_STEPS[position] steps to center.
 
-                        digitalWrite(DIR_PIN, !params->dirHigh ? HIGH : LOW);   // toggle dir pin
+                        //digitalWrite(DIR_PIN, !params->dirHigh ? HIGH : LOW);   // toggle dir pin //This depends on the Juice-Nose calibratio. In some cases you have to move back, in other cases you have to move forward. This is why we are not toggling the dir pin here.
                         for (uint16_t k = 0; k < POSITION_STEPS[params->position-1]; k++) {
                             if (stopRequested) {
                                 stopped = true;
