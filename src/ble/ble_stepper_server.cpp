@@ -17,9 +17,9 @@
 #define OPTICAL_SENSOR_PIN     4   // Optical position sensor (active LOW)
 
 // ----- Timing -----
-#define PULSE_WIDTH_US    90          // 0.3 ms HIGH pulse
+#define PULSE_WIDTH_US    70          // 0.3 ms HIGH pulse
 #define PULSE_INTERVAL_US_ROTATIONAL 200  //  ms between pulse starts (4 ms LOW after pulse)
-#define PULSE_INTERVAL_US_LINEAR  100  //  ms between pulse starts for linear motor (4 ms LOW after pulse)
+#define PULSE_INTERVAL_US_LINEAR  80  //  ms between pulse starts for linear motor (4 ms LOW after pulse)
 #define PULSE_INTERVAL_US_HOMING    5000/8  //  ms between pulse starts for rotational homing (4 ms LOW after pulse)
 
 // ----- Motor steps -----
@@ -28,15 +28,17 @@
 #define IN_CLOSING_STEPS  400      // Extra steps to ensure fully in home position after limit switch
 
 // ----- Rotational motor sensor limits -----
-#define ROTATIONAL_SENSOR_SKIP_STEPS    110*8  // Ignore sensor for first N steps
+#define ROTATIONAL_SENSOR_SKIP_STEPS    105*8  // Ignore sensor for first N steps
 #define ROTATIONAL_SENSOR_HOME_STEPS  90*8    // Steps to move clockwise after finding home flag to ensure we are centered inside the home flag
 #define ROTATIONAL_MAX_STEPS    600*8         // Max steps before error
 #define MAX_FLAGS_TO_FIND_HOME  12          // Max flags to find home position
 
 // ----- Position-specific centering steps (indexed 0-11) -----
 //static const uint16_t POSITION_STEPS[12] = { 0, 25, 25, 20, 20, 0,  0,  0,  0,  0, 0,  22 }; //Juice-1 con driver A4988
+
+static const uint16_t POSITION_STEPS[12] = {0, 0,  0,  0, 20, 100,  0,  0,  0, 0,  0,  0 }; //Juice-2
 /////////////////////////////////////////// 1   2   3   4   5   6   7   8   9  10  11  12
-static const uint16_t POSITION_STEPS[12] = { 0, 0,  0,  0, 20, 100,200,350,350,250,100,100 };
+//static const uint16_t POSITION_STEPS[12] = {0, 200, 200, 160, 200, 160,160,150, 0, 0, 0,100};   //Juice-1 con driver TMC2209 (same as Juice-2)
 
 // ----- BLE UUIDs (custom 128-bit) -----
 #define BLE_SERVICE_UUID     "AA000001-1234-1234-1234-1234567890AA"
@@ -195,7 +197,7 @@ static void rotationalMotorTask(void* pvParams) {
                     if (digitalRead(params->sensorPin) == HIGH) {
                         // Sensor pin went HIGH again. Now we move some more POSITION_STEPS[position] steps to center.
 
-                        //digitalWrite(DIR_PIN, !params->dirHigh ? HIGH : LOW);   // toggle dir pin //This depends on the Juice-Nose calibratio. In some cases you have to move back, in other cases you have to move forward. This is why we are not toggling the dir pin here.
+                        digitalWrite(DIR_PIN, !params->dirHigh ? HIGH : LOW);   // toggle dir pin //This depends on the Juice-Nose calibratio. In some cases you have to move back, in other cases you have to move forward. This is why we are not toggling the dir pin here.
                         for (uint16_t k = 0; k < POSITION_STEPS[params->position-1]; k++) {
                             if (stopRequested) {
                                 stopped = true;
@@ -654,6 +656,7 @@ void initBleStepperServer() {
     setupMotorGpio();
 
     BLEDevice::init("ESP32_STEPPER");
+
 
     BLEServer* bleServer = BLEDevice::createServer();
     bleServer->setCallbacks(new ConnectionCallback());
