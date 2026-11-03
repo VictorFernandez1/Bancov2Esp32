@@ -403,6 +403,7 @@ class MainWindow(QMainWindow):
         util_row.addWidget(interval_box)
 
         left_col.addLayout(util_row)
+
         main_row.addLayout(left_col, 3)
 
         # -- Right column: temperature --

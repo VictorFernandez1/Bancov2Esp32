@@ -6,6 +6,8 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
+
+
 // ----- Pin configuration -----
 #define ROT_STEP_PIN   9    // Rotational motor STEP
 #define LIN_STEP_PIN   7    // Linear motor STEP
