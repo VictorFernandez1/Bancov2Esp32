@@ -29,10 +29,12 @@
 #define PULSE_INTERVAL_US_LINEAR  80  //  ms between pulse starts for linear motor (4 ms LOW after pulse)
 #define PULSE_INTERVAL_US_HOMING    5000/8  //  ms between pulse starts for rotational homing (4 ms LOW after pulse)
 
-// ----- Motor steps -----
+// ----- Linear movement durations -----
 #define LINEAR_DURATION_MS 5000
-#define LIMIT_SWITCH_MAX_STEPS  80000  // Max steps for limit switch movements
-#define IN_CLOSING_STEPS  400      // Extra steps to ensure fully in home position after limit switch
+#define HOMING_MAX_DURATION_MS 20000
+#define HOMING_RAMP_DURATION_MS 500
+#define IN_CLOSING_DURATION_MS 100
+#define HOMING_VACTUAL 4000
 
 // ----- Rotational motor sensor limits -----
 #define ROTATIONAL_SENSOR_SKIP_STEPS    105*8  // Ignore sensor for first N steps
@@ -59,7 +61,7 @@ static volatile bool     stopRequested  = false;
 static volatile uint32_t pulseIntervalUs = PULSE_INTERVAL_US_ROTATIONAL;
 static volatile int32_t vactualMagnitude = 1800;
 static volatile uint16_t motorCurrentMa = 1200;
-static volatile uint16_t motorMicrosteps = 4;
+static volatile uint16_t motorMicrosteps = 2;
 static volatile uint32_t linearDurationMs = LINEAR_DURATION_MS;
 static BLECharacteristic* statusCharacteristic = nullptr;
 static BLECharacteristic* temperatureCharacteristic = nullptr;
@@ -72,6 +74,12 @@ TMC2209Stepper driver(&driverSerial, R_SENSE, DRIVER_ADDRESS);
 struct VactualTaskParams {
     bool dirHigh;
     uint32_t durationMs;
+};
+
+struct VactualHomingTaskParams {
+    bool dirHigh;
+    uint8_t limitPin;
+    bool closeAfterLimit;
 };
 
 struct RotationalMotorTaskParams {
@@ -166,6 +174,93 @@ static void launchVactualMotorTask(bool dirHigh) {
     stopRequested = false;
     motorBusy = true;
     xTaskCreate(vactualMotorTask, "vactualMotorTask", 2048, params, 1, NULL);
+}
+
+static void vactualHomingTask(void* pvParams) {
+    auto* params = static_cast<VactualHomingTaskParams*>(pvParams);
+
+    enableMotors();
+    const int32_t targetVelocity = params->dirHigh ? HOMING_VACTUAL : -HOMING_VACTUAL;
+
+    bool stopped = false;
+    bool limitReached = false;
+    const uint32_t startMs = millis();
+
+    while ((millis() - startMs) < HOMING_RAMP_DURATION_MS) {
+        if (stopRequested) {
+            stopped = true;
+            break;
+        }
+        if (digitalRead(params->limitPin) == LOW) {
+            limitReached = true;
+            break;
+        }
+
+        const uint32_t rampElapsedMs = millis() - startMs;
+        const int32_t rampVelocity = static_cast<int32_t>(
+            (static_cast<int64_t>(targetVelocity) * rampElapsedMs)
+            / HOMING_RAMP_DURATION_MS
+        );
+        driver.VACTUAL(rampVelocity);
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    if (!stopped && !limitReached) {
+        driver.VACTUAL(targetVelocity);
+    }
+
+    while ((millis() - startMs) < HOMING_MAX_DURATION_MS) {
+        if (stopRequested) {
+            stopped = true;
+            break;
+        }
+        if (digitalRead(params->limitPin) == LOW) {
+            limitReached = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    if (!stopped && limitReached && params->closeAfterLimit) {
+        driver.VACTUAL(targetVelocity);
+        const uint32_t closeStartMs = millis();
+        while ((millis() - closeStartMs) < IN_CLOSING_DURATION_MS) {
+            if (stopRequested) {
+                stopped = true;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    }
+
+    driver.VACTUAL(0);
+    disableMotors();
+    stopRequested = false;
+
+    if (statusCharacteristic) {
+        if (stopped) {
+            statusCharacteristic->setValue("STOPPED");
+        } else if (limitReached) {
+            statusCharacteristic->setValue("COMPLETE");
+        } else {
+            statusCharacteristic->setValue(
+                params->dirHigh ? "ERROR: IN limit not reached."
+                                : "ERROR: OUT limit not reached."
+            );
+        }
+        statusCharacteristic->notify();
+    }
+
+    motorBusy = false;
+    delete params;
+    vTaskDelete(NULL);
+}
+
+static void launchVactualHomingTask(bool dirHigh, uint8_t limitPin, bool closeAfterLimit) {
+    auto* params = new VactualHomingTaskParams{dirHigh, limitPin, closeAfterLimit};
+    stopRequested = false;
+    motorBusy = true;
+    xTaskCreate(vactualHomingTask, "vactualHomingTask", 2048, params, 1, NULL);
 }
 
 // ============================================================
@@ -433,115 +528,12 @@ static void launchRotationalHomingTask() {
 
 
 
-static void moveInHomeTask(void* /*pvParams*/) {
-    enableMotors();
-    delayMicroseconds(1000);  // A4988 wake-up time after SLEEP→HIGH
-    digitalWrite(DIR_PIN, HIGH);  // IN direction (DIR HIGH)
-    delayMicroseconds(1);         // DIR setup time before first STEP
-    pulseIntervalUs = PULSE_INTERVAL_US_LINEAR;
-
-    bool stopped = false;
-    bool limitReached = false;
-
-    for (uint16_t i = 0; i < LIMIT_SWITCH_MAX_STEPS; i++) {
-        if (stopRequested) {
-            stopped = true;
-            break;
-        }
-
-        if (digitalRead(IN_LIMIT_PIN) == LOW) {
-            limitReached = true;
-            break;
-        }
-
-        generateStepPulse(LIN_STEP_PIN);
-        delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
-    }
-
-    // After reaching the limit switch, we move a few more steps to ensure we are fully in the home position
-
-    if(limitReached) {
-        for (uint16_t i = 0; i < IN_CLOSING_STEPS; i++) {  // Move  more step to ensure we are fully in the home position
-            if (stopRequested) {
-                stopped = true;
-                break;
-            }
-            generateStepPulse(LIN_STEP_PIN);
-            delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
-        }
-    }
-
-    disableMotors();
-    stopRequested = false;
-
-    if (statusCharacteristic) {
-        if (stopped) {
-            statusCharacteristic->setValue("STOPPED");
-        } else if (limitReached) {
-            statusCharacteristic->setValue("COMPLETE");
-        } else {
-            statusCharacteristic->setValue("ERROR: IN limit not reached.");
-        }
-        statusCharacteristic->notify();
-    }
-
-    motorBusy = false;
-    vTaskDelete(NULL);
-}
-
 static void launchMoveInHomeTask() {
-    stopRequested = false;
-    motorBusy = true;
-    xTaskCreate(moveInHomeTask, "moveInHomeTask", 2048, NULL, 1, NULL);
-}
-
-static void moveOutHomeTask(void* /*pvParams*/) {
-    enableMotors();
-    delayMicroseconds(1000);  // A4988 wake-up time after SLEEP→HIGH
-    digitalWrite(DIR_PIN, LOW);  // OUT direction (DIR LOW)
-    delayMicroseconds(1);        // DIR setup time before first STEP
-    pulseIntervalUs = PULSE_INTERVAL_US_LINEAR;
-
-    bool stopped = false;
-    bool limitReached = false;
-
-    for (uint16_t i = 0; i < LIMIT_SWITCH_MAX_STEPS; i++) {
-        if (stopRequested) {
-            stopped = true;
-            break;
-        }
-
-        if (digitalRead(OUT_LIMIT_PIN) == LOW) {
-            limitReached = true;
-            break;
-        }
-
-        generateStepPulse(LIN_STEP_PIN);
-        delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
-    }
-
-    disableMotors();
-    stopRequested = false;
-
-    if (statusCharacteristic) {
-        if (stopped) {
-            statusCharacteristic->setValue("STOPPED");
-        } else if (limitReached) {
-            statusCharacteristic->setValue("COMPLETE");
-        } else {
-            statusCharacteristic->setValue("ERROR: OUT limit not reached.");
-        }
-        statusCharacteristic->notify();
-    }
-
-    motorBusy = false;
-    vTaskDelete(NULL);
+    launchVactualHomingTask(true, IN_LIMIT_PIN, true);
 }
 
 static void launchMoveOutHomeTask() {
-    stopRequested = false;
-    motorBusy = true;
-    xTaskCreate(moveOutHomeTask, "moveOutHomeTask", 2048, NULL, 1, NULL);
+    launchVactualHomingTask(false, OUT_LIMIT_PIN, false);
 }
 
 // ============================================================
@@ -615,13 +607,13 @@ class CommandCallback : public BLECharacteristicCallbacks {
 
         if (cmd.startsWith("SETMICROSTEPS:")) {
             int32_t val = cmd.substring(14).toInt();
-            if (val >= 1 && val <= 256) {
+            if (val >= 0 && val <= 256) {
                 motorMicrosteps = (uint16_t) val;
                 driver.microsteps(motorMicrosteps);
                 Serial.printf("Microsteps set to %u\n", motorMicrosteps);
                 sendStatus("OK");
             } else {
-                Serial.printf("SETMICROSTEPS rejected: %ld (must be 1..256)\n", (long) val);
+                Serial.printf("SETMICROSTEPS rejected: %ld (must be 0..256)\n", (long) val);
                 sendStatus("INVALID");
             }
             return;

@@ -418,7 +418,7 @@ class MainWindow(QMainWindow):
             "SETCURRENT:"
         )
         self._microsteps_spin, self._btn_set_microsteps = self._make_setting(
-            tuning_layout, 2, "Microsteps:", 1, 256, 4,
+            tuning_layout, 2, "Microsteps:", 0, 256, 0,
             "SETMICROSTEPS:"
         )
         self._duration_spin, self._btn_set_duration = self._make_setting(

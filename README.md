@@ -145,25 +145,29 @@ case-insensitively.
 | --- | --- |
 | `MOVEIN` | Move the linear motor inward using VACTUAL for the configured duration |
 | `MOVEOUT` | Move the linear motor outward using VACTUAL for the configured duration |
-| `MOVEINHOME` | Move inward until the in-limit switch, then close an additional 400 steps |
-| `MOVEOUTHOME` | Move outward until the out-limit switch |
+| `MOVEINHOME` | Ramp to VACTUAL `+4000` over 500 milliseconds, move until the in-limit switch, then continue for 400 milliseconds |
+| `MOVEOUTHOME` | Ramp to VACTUAL `-4000` over 500 milliseconds, then move until the out-limit switch |
 | `MOVECLOCKWISE:1` through `MOVECLOCKWISE:12` | Move the rotational motor clockwise to a sensor-defined position |
 | `MOVECOUNTERCLOCKWISE:1` through `MOVECOUNTERCLOCKWISE:12` | Move the rotational motor counterclockwise to a sensor-defined position |
 | `ROTATIONALHOMING` | Find the rotational home flag |
 | `STOP` | Request cancellation of the active motor task |
 | `SETVACTUAL:<value>` | Set the VACTUAL magnitude for regular linear movement (`1..10000`, default `1800`) |
 | `SETCURRENT:<mA>` | Set TMC2209 RMS motor current (`100..2000` mA, default `1200`) |
-| `SETMICROSTEPS:<value>` | Set TMC2209 microsteps (`1..256`, default `4`) |
+| `SETMICROSTEPS:<value>` | Set TMC2209 microsteps (`0..256`, default `0`) |
 | `SETLINEARDURATION:<ms>` | Set regular linear movement duration (`1..60000` ms, default `5000`) |
 | `FANON` / `FANOFF` | Enable or disable the fan |
 | `SETINTERVAL:<microseconds>` | Set the pulse interval when greater than the 70 µs pulse width |
 | `SENSORGPIO5` | Query the optical sensor |
 
 `SENSORGPIO5` is a legacy command name. It reads the optical sensor on GPIO 4,
-not GPIO 5. `MOVEIN` and `MOVEOUT` set the signed VACTUAL value and stop it
-after the configured duration. `MOVEINHOME` and `MOVEOUTHOME` remain
-limit-switch-based STEP/DIR movements, and rotational movements remain
-sensor-based STEP/DIR movements.
+not GPIO 5. `MOVEIN` and `MOVEOUT` set the configurable signed VACTUAL value
+and stop it after the configured duration. `MOVEINHOME` and `MOVEOUTHOME` use
+fixed signed VACTUAL values of `+4000` and `-4000`, respectively, using a
+linear 500 millisecond ramp from zero, and stop when their limit switch is
+reached. Homing has a 20,000 millisecond safety timeout; `MOVEINHOME`
+continues inward for 400 milliseconds after reaching the limit. STOP or a
+limit switch is honored immediately during the ramp. Rotational movements
+remain sensor-based STEP/DIR movements.
 
 Movement commands are rejected with `WAIT` while another motor task is
 running. `STOP`, fan commands, interval updates, and sensor queries remain
