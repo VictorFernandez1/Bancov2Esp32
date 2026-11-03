@@ -11,6 +11,7 @@
 #define UART_RX_PIN 5
 #define UART_TX_PIN 6
 #define DRIVER_ADDRESS 0b00
+#define ROT_DRIVER_ADDRESS 0b01
 #define R_SENSE 0.11f
 
 // ----- Pin configuration -----
@@ -37,17 +38,20 @@
 #define HOMING_VACTUAL 4000
 
 // ----- Rotational motor sensor limits -----
-#define ROTATIONAL_SENSOR_SKIP_STEPS    105*8  // Ignore sensor for first N steps
+#define ROTATIONAL_VACTUAL 1000
+#define ROTATIONAL_SENSOR_SKIP_DURATION_MS    300  // Ignore sensor for this duration
+#define ROTATIONAL_HOMING_SENSOR_SKIP_STEPS   300
 #define ROTATIONAL_SENSOR_HOME_STEPS  90*8    // Steps to move clockwise after finding home flag to ensure we are centered inside the home flag
-#define ROTATIONAL_MAX_STEPS    600*8         // Max steps before error
+#define ROTATIONAL_MAX_DURATION_MS    600*8   // Max duration before error
+#define ROTATIONAL_HOMING_MAX_STEPS  600*8
 #define MAX_FLAGS_TO_FIND_HOME  12          // Max flags to find home position
 
 // ----- Position-specific centering steps (indexed 0-11) -----
-//static const uint16_t POSITION_STEPS[12] = { 0, 25, 25, 20, 20, 0,  0,  0,  0,  0, 0,  22 }; //Juice-1 con driver A4988
+//static const uint16_t POSITION_DURATION_MS[12] = { 0, 25, 25, 20, 20, 0,  0, 0, 0, 0, 0, 22 }; //Juice-1 con driver A4988
 
-static const uint16_t POSITION_STEPS[12] = {0, 0,  0,  0, 20, 100,  0,  0,  0, 0,  0,  0 }; //Juice-2
+static const uint16_t POSITION_DURATION_MS[12] = {0, 0,  0,  0, 20, 100,  0,  0,  0, 0,  0,  0 }; //Juice-2
 /////////////////////////////////////////// 1   2   3   4   5   6   7   8   9  10  11  12
-//static const uint16_t POSITION_STEPS[12] = {0, 200, 200, 160, 200, 160,160,150, 0, 0, 0,100};   //Juice-1 con driver TMC2209 (same as Juice-2)
+//static const uint16_t POSITION_DURATION_MS[12] = {0, 200, 200, 160, 200, 160,160,150, 0, 0, 0,100};   //Juice-1 con driver TMC2209 (same as Juice-2)
 
 // ----- BLE UUIDs (custom 128-bit) -----
 #define BLE_SERVICE_UUID     "AA000001-1234-1234-1234-1234567890AA"
@@ -69,6 +73,7 @@ static volatile bool isClientConnected = false;
 
 HardwareSerial &driverSerial = Serial1;
 TMC2209Stepper driver(&driverSerial, R_SENSE, DRIVER_ADDRESS);
+TMC2209Stepper rotdriver(&driverSerial, R_SENSE, ROT_DRIVER_ADDRESS);
 
 // ----- Task parameter structs -----
 struct VactualTaskParams {
@@ -86,7 +91,7 @@ struct RotationalMotorTaskParams {
     uint8_t  stepPin;
     bool     dirHigh;  // true → DIR HIGH, false → DIR LOW
     uint8_t  sensorPin;  // GPIO pin for optical sensor
-    uint8_t  position;   // 1-12, selects centering steps from POSITION_STEPS
+    uint8_t  position;   // 1-12, selects centering duration from POSITION_DURATION_MS
 };
 
 // ============================================================
@@ -131,6 +136,14 @@ static void setupTmcDriver() {
     driver.en_spreadCycle(false);
     driver.pwm_autoscale(true);
     driver.VACTUAL(0);
+
+    rotdriver.begin();
+    rotdriver.toff(5);
+    rotdriver.rms_current(1200);
+    rotdriver.microsteps(2);
+    rotdriver.en_spreadCycle(false);
+    rotdriver.pwm_autoscale(true);
+    rotdriver.VACTUAL(0);
 }
 
 // ============================================================
@@ -271,31 +284,31 @@ static void rotationalMotorTask(void* pvParams) {
     auto* params = static_cast<RotationalMotorTaskParams*>(pvParams);
 
     enableMotors();
-    delayMicroseconds(1000);  // A4988 wake-up time after SLEEP→HIGH
-    digitalWrite(DIR_PIN, params->dirHigh ? HIGH : LOW);
-    delayMicroseconds(1);     // DIR setup time before first STEP
-
-    pulseIntervalUs = PULSE_INTERVAL_US_ROTATIONAL;
-
-
     bool stopped = false;
     bool positionReached = false;
-    uint16_t stepCount = 0;
+    const int32_t rotationalVelocity = params->dirHigh
+        ? ROTATIONAL_VACTUAL
+        : -ROTATIONAL_VACTUAL;
+    const uint32_t phase2DurationMs =
+        ROTATIONAL_MAX_DURATION_MS > ROTATIONAL_SENSOR_SKIP_DURATION_MS
+            ? ROTATIONAL_MAX_DURATION_MS - ROTATIONAL_SENSOR_SKIP_DURATION_MS
+            : 0;
 
-    // Phase 1: Skip sensor check for first ROTATIONAL_SENSOR_SKIP_STEPS
-    for (uint16_t i = 0; i < ROTATIONAL_SENSOR_SKIP_STEPS; i++) {
+    // Phase 1: Skip sensor check for the initial duration.
+    rotdriver.VACTUAL(rotationalVelocity);
+    const uint32_t phase1StartMs = millis();
+    while ((millis() - phase1StartMs) < ROTATIONAL_SENSOR_SKIP_DURATION_MS) {
         if (stopRequested) {
             stopped = true;
             break;
         }
-        generateStepPulse(params->stepPin);
-        delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
-        stepCount++;
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
-    // Phase 2: Monitor sensor until position reached or max steps hit
+    // Phase 2: Monitor sensor until position reached or maximum duration.
     if (!stopped) {
-        for (uint16_t i = ROTATIONAL_SENSOR_SKIP_STEPS; i < ROTATIONAL_MAX_STEPS; i++) {
+        const uint32_t phase2StartMs = millis();
+        while ((millis() - phase2StartMs) < phase2DurationMs) {
             if (stopRequested) {
                 stopped = true;
                 break;
@@ -304,48 +317,38 @@ static void rotationalMotorTask(void* pvParams) {
             // Check if sensor pin went LOW (position reached)
             if (digitalRead(params->sensorPin) == LOW) {
                 positionReached = true;
-                // Phase 3: Move a few more steps until sensor pin goes high again.
-
-                pulseIntervalUs = PULSE_INTERVAL_US_HOMING;  // Low speed.
-                for (uint16_t j = 0; j < ROTATIONAL_SENSOR_SKIP_STEPS; j++) {
+                // Phase 3: Move at one third speed until sensor goes high.
+                rotdriver.VACTUAL(rotationalVelocity / 3);
+                const uint32_t phase3StartMs = millis();
+                while ((millis() - phase3StartMs) < ROTATIONAL_SENSOR_SKIP_DURATION_MS) {
                     if (stopRequested) {
                         stopped = true;
                         break;
                     }
                     if (digitalRead(params->sensorPin) == HIGH) {
-                        // Sensor pin went HIGH again. Now we move some more POSITION_STEPS[position] steps to center.
-
-                        digitalWrite(DIR_PIN, !params->dirHigh ? HIGH : LOW);   // toggle dir pin //This depends on the Juice-Nose calibratio. In some cases you have to move back, in other cases you have to move forward. This is why we are not toggling the dir pin here.
-                        for (uint16_t k = 0; k < POSITION_STEPS[params->position-1]; k++) {
+                        // Sensor pin went HIGH again. Move opposite to center.
+                        rotdriver.VACTUAL(-rotationalVelocity / 3);
+                        const uint32_t centerDurationMs =
+                            POSITION_DURATION_MS[params->position - 1];
+                        const uint32_t centerStartMs = millis();
+                        while ((millis() - centerStartMs) < centerDurationMs) {
                             if (stopRequested) {
                                 stopped = true;
                                 break;
                             }
-                            generateStepPulse(params->stepPin);
-                            delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
+                            vTaskDelay(pdMS_TO_TICKS(1));
                         }
-
                         break;
-
                     }
-                    generateStepPulse(params->stepPin);
-                    delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
-                    stepCount++;
+                    vTaskDelay(pdMS_TO_TICKS(1));
                 }
-
-
-
                 break;
             }
-
-            generateStepPulse(params->stepPin);
-            delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
-            stepCount++;
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
     }
 
-
-
+    rotdriver.VACTUAL(0);
     disableMotors();
     stopRequested = false;
 
@@ -386,7 +389,7 @@ static void rotationalHomingTask(void* /*pvParams*/) {
     bool stopped = false;
     // Phase 0: Move clockwise for a few steps to ensure we are not already on a flag (sensor LOW)
 
-        for (uint16_t i = 0; i < ROTATIONAL_MAX_STEPS/2; i++) {
+        for (uint16_t i = 0; i < ROTATIONAL_HOMING_MAX_STEPS/2; i++) {
             if (stopRequested) {
                 stopped = true;
                 break;
@@ -410,8 +413,8 @@ static void rotationalHomingTask(void* /*pvParams*/) {
 
 
         digitalWrite(DIR_PIN, HIGH);  // Counterclockwise (DIR HIGH)
-        // Phase 1: Skip sensor for first ROTATIONAL_SENSOR_SKIP_STEPS
-        for (uint16_t i = 0; i < ROTATIONAL_SENSOR_SKIP_STEPS; i++) {
+        // Phase 1: Skip sensor for first homing step count.
+        for (uint16_t i = 0; i < ROTATIONAL_HOMING_SENSOR_SKIP_STEPS; i++) {
             if (stopRequested) {
                 stopped = true;
                 break;
@@ -433,7 +436,7 @@ static void rotationalHomingTask(void* /*pvParams*/) {
 
         // Phase 2: Move until we find the next flag (sensor goes LOW)
         bool flagDetected = false;
-        for (uint16_t i = 0; i < ROTATIONAL_MAX_STEPS; i++) {
+        for (uint16_t i = 0; i < ROTATIONAL_HOMING_MAX_STEPS; i++) {
             if (stopRequested) {
                 stopped = true;
                 break;
@@ -472,7 +475,7 @@ static void rotationalHomingTask(void* /*pvParams*/) {
 
 
         delayMicroseconds(1000000);
-        for (uint16_t i = 0; i < ROTATIONAL_MAX_STEPS; i++) {
+        for (uint16_t i = 0; i < ROTATIONAL_HOMING_MAX_STEPS; i++) {
             if (stopRequested) {
                 stopped = true;
                 break;
