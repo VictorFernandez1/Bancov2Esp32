@@ -20,7 +20,7 @@ from bleak import BleakClient, BleakScanner
 from PySide6.QtCore import Qt, QObject, QPointF, Signal
 from PySide6.QtGui import QPainter, QPen
 from PySide6.QtWidgets import (
-    QApplication, QGroupBox, QHBoxLayout, QLabel,
+    QApplication, QGroupBox, QGridLayout, QHBoxLayout, QLabel,
     QMainWindow, QPushButton, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -404,6 +404,29 @@ class MainWindow(QMainWindow):
 
         left_col.addLayout(util_row)
 
+        # TMC2209 tuning controls
+        tuning_box = QGroupBox("TMC2209 Settings")
+        tuning_layout = QGridLayout(tuning_box)
+        tuning_layout.setContentsMargins(6, 6, 6, 6)
+
+        self._vactual_spin, self._btn_set_vactual = self._make_setting(
+            tuning_layout, 0, "VACTUAL:", 1, 10000, 1800,
+            "SETVACTUAL:"
+        )
+        self._current_spin, self._btn_set_current = self._make_setting(
+            tuning_layout, 1, "Current (mA):", 100, 2000, 1200,
+            "SETCURRENT:"
+        )
+        self._microsteps_spin, self._btn_set_microsteps = self._make_setting(
+            tuning_layout, 2, "Microsteps:", 1, 256, 4,
+            "SETMICROSTEPS:"
+        )
+        self._duration_spin, self._btn_set_duration = self._make_setting(
+            tuning_layout, 3, "Linear duration (ms):", 1, 60000, 5000,
+            "SETLINEARDURATION:"
+        )
+        left_col.addWidget(tuning_box)
+
         main_row.addLayout(left_col, 3)
 
         # -- Right column: temperature --
@@ -439,12 +462,30 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(lambda: self._worker.send_command(command))
         return btn
 
+    def _make_setting(self, layout, row, label, minimum, maximum, value, command):
+        layout.addWidget(QLabel(label), row, 0)
+        spin = QSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setValue(value)
+        spin.setEnabled(False)
+        layout.addWidget(spin, row, 1)
+
+        button = QPushButton("Set")
+        button.setFixedHeight(28)
+        button.setEnabled(False)
+        button.clicked.connect(lambda: self._worker.send_command(f"{command}{spin.value()}"))
+        layout.addWidget(button, row, 2)
+        return spin, button
+
     def _command_buttons(self):
         return (self._btn_in, self._btn_out, self._btn_in_home, self._btn_out_home,
                 self._btn_cw, self._btn_ccw, self._btn_sensor_query,
                 self._btn_fan_on, self._btn_fan_off, self._btn_stop,
                 self._btn_set_interval, self._interval_spin, self._btn_rot_home,
-                self._pos_spin)
+                self._pos_spin, self._vactual_spin, self._btn_set_vactual,
+                self._current_spin, self._btn_set_current,
+                self._microsteps_spin, self._btn_set_microsteps,
+                self._duration_spin, self._btn_set_duration)
 
     # ── Slots (called in Qt main thread) ─────────────────────────────────────
 

@@ -13,6 +13,7 @@ The firmware advertises as `ESP32_STEPPER`.
 ## Features
 
 - Linear motor movement in both directions.
+- Timed linear movement using the TMC2209 `VACTUAL` velocity mode.
 - Linear in/out homing using limit switches.
 - Rotational movement with an optical position sensor and selectable positions
   1 through 12.
@@ -142,20 +143,27 @@ case-insensitively.
 
 | Command | Description |
 | --- | --- |
-| `MOVEIN` | Move the linear motor inward for the configured fixed travel |
-| `MOVEOUT` | Move the linear motor outward for the configured fixed travel |
+| `MOVEIN` | Move the linear motor inward using VACTUAL for the configured duration |
+| `MOVEOUT` | Move the linear motor outward using VACTUAL for the configured duration |
 | `MOVEINHOME` | Move inward until the in-limit switch, then close an additional 400 steps |
 | `MOVEOUTHOME` | Move outward until the out-limit switch |
 | `MOVECLOCKWISE:1` through `MOVECLOCKWISE:12` | Move the rotational motor clockwise to a sensor-defined position |
 | `MOVECOUNTERCLOCKWISE:1` through `MOVECOUNTERCLOCKWISE:12` | Move the rotational motor counterclockwise to a sensor-defined position |
 | `ROTATIONALHOMING` | Find the rotational home flag |
 | `STOP` | Request cancellation of the active motor task |
+| `SETVACTUAL:<value>` | Set the VACTUAL magnitude for regular linear movement (`1..10000`, default `1800`) |
+| `SETCURRENT:<mA>` | Set TMC2209 RMS motor current (`100..2000` mA, default `1200`) |
+| `SETMICROSTEPS:<value>` | Set TMC2209 microsteps (`1..256`, default `4`) |
+| `SETLINEARDURATION:<ms>` | Set regular linear movement duration (`1..60000` ms, default `5000`) |
 | `FANON` / `FANOFF` | Enable or disable the fan |
 | `SETINTERVAL:<microseconds>` | Set the pulse interval when greater than the 70 µs pulse width |
 | `SENSORGPIO5` | Query the optical sensor |
 
 `SENSORGPIO5` is a legacy command name. It reads the optical sensor on GPIO 4,
-not GPIO 5.
+not GPIO 5. `MOVEIN` and `MOVEOUT` set the signed VACTUAL value and stop it
+after the configured duration. `MOVEINHOME` and `MOVEOUTHOME` remain
+limit-switch-based STEP/DIR movements, and rotational movements remain
+sensor-based STEP/DIR movements.
 
 Movement commands are rejected with `WAIT` while another motor task is
 running. `STOP`, fan commands, interval updates, and sensor queries remain

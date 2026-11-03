@@ -5,8 +5,13 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <TMCStepper.h>
 
-
+// ----- TMC2209 UART configuration -----
+#define UART_RX_PIN 5
+#define UART_TX_PIN 6
+#define DRIVER_ADDRESS 0b00
+#define R_SENSE 0.11f
 
 // ----- Pin configuration -----
 #define ROT_STEP_PIN   9    // Rotational motor STEP
@@ -25,7 +30,7 @@
 #define PULSE_INTERVAL_US_HOMING    5000/8  //  ms between pulse starts for rotational homing (4 ms LOW after pulse)
 
 // ----- Motor steps -----
-#define LINEAR_STEPS      5000
+#define LINEAR_DURATION_MS 5000
 #define LIMIT_SWITCH_MAX_STEPS  80000  // Max steps for limit switch movements
 #define IN_CLOSING_STEPS  400      // Extra steps to ensure fully in home position after limit switch
 
@@ -52,15 +57,21 @@ static const uint16_t POSITION_STEPS[12] = {0, 0,  0,  0, 20, 100,  0,  0,  0, 0
 static volatile bool     motorBusy      = false;
 static volatile bool     stopRequested  = false;
 static volatile uint32_t pulseIntervalUs = PULSE_INTERVAL_US_ROTATIONAL;
+static volatile int32_t vactualMagnitude = 1800;
+static volatile uint16_t motorCurrentMa = 1200;
+static volatile uint16_t motorMicrosteps = 4;
+static volatile uint32_t linearDurationMs = LINEAR_DURATION_MS;
 static BLECharacteristic* statusCharacteristic = nullptr;
 static BLECharacteristic* temperatureCharacteristic = nullptr;
 static volatile bool isClientConnected = false;
 
+HardwareSerial &driverSerial = Serial1;
+TMC2209Stepper driver(&driverSerial, R_SENSE, DRIVER_ADDRESS);
+
 // ----- Task parameter structs -----
-struct MotorTaskParams {
-    uint8_t  stepPin;
-    bool     dirHigh;  // true → DIR HIGH, false → DIR LOW
-    uint16_t steps;
+struct VactualTaskParams {
+    bool dirHigh;
+    uint32_t durationMs;
 };
 
 struct RotationalMotorTaskParams {
@@ -103,29 +114,39 @@ static void generateStepPulse(uint8_t stepPin) {
 static void enableMotors()  { digitalWrite(SLEEP_PIN, LOW);  }
 static void disableMotors() { digitalWrite(SLEEP_PIN, HIGH); }
 
+static void setupTmcDriver() {
+    driverSerial.begin(115200, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+    driver.begin();
+    driver.toff(5);
+    driver.rms_current(motorCurrentMa);
+    driver.microsteps(motorMicrosteps);
+    driver.en_spreadCycle(false);
+    driver.pwm_autoscale(true);
+    driver.VACTUAL(0);
+}
+
 // ============================================================
 //  Motor task (FreeRTOS — replaces Python threads)
 // ============================================================
 
-static void motorTask(void* pvParams) {
-    auto* params = static_cast<MotorTaskParams*>(pvParams);
+static void vactualMotorTask(void* pvParams) {
+    auto* params = static_cast<VactualTaskParams*>(pvParams);
 
     enableMotors();
-    delayMicroseconds(1000);  // A4988 wake-up time after SLEEP→HIGH
-    digitalWrite(DIR_PIN, params->dirHigh ? HIGH : LOW);
-    delayMicroseconds(1);     // DIR setup time before first STEP (A4988 requires ≥200 ns)
-    pulseIntervalUs = PULSE_INTERVAL_US_LINEAR;
-
+    const int32_t velocity = params->dirHigh ? vactualMagnitude : -vactualMagnitude;
+    driver.VACTUAL(velocity);
     bool stopped = false;
-    for (uint16_t i = 0; i < params->steps; i++) {
+
+    const uint32_t startMs = millis();
+    while ((millis() - startMs) < params->durationMs) {
         if (stopRequested) {
             stopped = true;
             break;
         }
-        generateStepPulse(params->stepPin);
-        delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
+    driver.VACTUAL(0);
     disableMotors();
 
     stopRequested = false;
@@ -140,11 +161,11 @@ static void motorTask(void* pvParams) {
     vTaskDelete(NULL);
 }
 
-static void launchMotorTask(uint8_t stepPin, bool dirHigh, uint16_t steps) {
-    auto* params = new MotorTaskParams{stepPin, dirHigh, steps};
+static void launchVactualMotorTask(bool dirHigh) {
+    auto* params = new VactualTaskParams{dirHigh, linearDurationMs};
     stopRequested = false;
     motorBusy = true;
-    xTaskCreate(motorTask, "motorTask", 2048, params, 1, NULL);
+    xTaskCreate(vactualMotorTask, "vactualMotorTask", 2048, params, 1, NULL);
 }
 
 // ============================================================
@@ -558,10 +579,64 @@ class CommandCallback : public BLECharacteristicCallbacks {
 
         Serial.printf("Received command: %s\n", cmd.c_str());
 
-        // STOP, SETINTERVAL, FANON and FANOFF bypass the busy guard intentionally
+        // STOP, configuration updates, and fan commands bypass the busy guard.
         if (cmd == "STOP") {
             stopRequested = true;
             sendStatus("OK");
+            return;
+        }
+
+        if (cmd.startsWith("SETVACTUAL:")) {
+            int32_t val = cmd.substring(11).toInt();
+            if (val >= 1 && val <= 10000) {
+                vactualMagnitude = val;
+                Serial.printf("VACTUAL magnitude set to %ld\n", (long) vactualMagnitude);
+                sendStatus("OK");
+            } else {
+                Serial.printf("SETVACTUAL rejected: %ld (must be 1..10000)\n", (long) val);
+                sendStatus("INVALID");
+            }
+            return;
+        }
+
+        if (cmd.startsWith("SETCURRENT:")) {
+            int32_t val = cmd.substring(11).toInt();
+            if (val >= 100 && val <= 2000) {
+                motorCurrentMa = (uint16_t) val;
+                driver.rms_current(motorCurrentMa);
+                Serial.printf("Motor current set to %u mA\n", motorCurrentMa);
+                sendStatus("OK");
+            } else {
+                Serial.printf("SETCURRENT rejected: %ld (must be 100..2000)\n", (long) val);
+                sendStatus("INVALID");
+            }
+            return;
+        }
+
+        if (cmd.startsWith("SETMICROSTEPS:")) {
+            int32_t val = cmd.substring(14).toInt();
+            if (val >= 1 && val <= 256) {
+                motorMicrosteps = (uint16_t) val;
+                driver.microsteps(motorMicrosteps);
+                Serial.printf("Microsteps set to %u\n", motorMicrosteps);
+                sendStatus("OK");
+            } else {
+                Serial.printf("SETMICROSTEPS rejected: %ld (must be 1..256)\n", (long) val);
+                sendStatus("INVALID");
+            }
+            return;
+        }
+
+        if (cmd.startsWith("SETLINEARDURATION:")) {
+            uint32_t val = (uint32_t) cmd.substring(18).toInt();
+            if (val >= 1 && val <= 60000) {
+                linearDurationMs = val;
+                Serial.printf("Linear duration set to %lu ms\n", (unsigned long) linearDurationMs);
+                sendStatus("OK");
+            } else {
+                Serial.printf("SETLINEARDURATION rejected: %lu (must be 1..60000)\n", (unsigned long) val);
+                sendStatus("INVALID");
+            }
             return;
         }
 
@@ -601,10 +676,10 @@ class CommandCallback : public BLECharacteristicCallbacks {
 
         if (cmd == "MOVEIN") {
             sendStatus("OK");
-            launchMotorTask(LIN_STEP_PIN, true, LINEAR_STEPS);       // DIR HIGH = IN
+            launchVactualMotorTask(true);                           // Positive VACTUAL = IN
         } else if (cmd == "MOVEOUT") {
             sendStatus("OK");
-            launchMotorTask(LIN_STEP_PIN, false, LINEAR_STEPS);      // DIR LOW  = OUT
+            launchVactualMotorTask(false);                          // Negative VACTUAL = OUT
         } else if (cmd == "MOVEINHOME") {
             sendStatus("OK");
             launchMoveInHomeTask();  // DIR HIGH = IN, monitored by IN_LIMIT_PIN
@@ -656,6 +731,7 @@ class ConnectionCallback : public BLEServerCallbacks {
 
 void initBleStepperServer() {
     setupMotorGpio();
+    setupTmcDriver();
 
     BLEDevice::init("ESP32_STEPPER");
 
@@ -694,5 +770,5 @@ void initBleStepperServer() {
     BLEDevice::startAdvertising();
 
     Serial.println("BLE server started. Device name: ESP32_STEPPER");
-    Serial.println("Commands: MOVEIN / MOVEOUT / MOVEINHOME / MOVEOUTHOME / HOMING / MOVECLOCKWISE / MOVECOUNTERCLOCKWISE / FANON / FANOFF / STOP / SETINTERVAL:<us>");
+    Serial.println("Commands: MOVEIN / MOVEOUT / MOVEINHOME / MOVEOUTHOME / HOMING / MOVECLOCKWISE / MOVECOUNTERCLOCKWISE / FANON / FANOFF / STOP / SETVACTUAL:<value> / SETCURRENT:<mA> / SETMICROSTEPS:<value> / SETLINEARDURATION:<ms> / SETINTERVAL:<us>");
 }
