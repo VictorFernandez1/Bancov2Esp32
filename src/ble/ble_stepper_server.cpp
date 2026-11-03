@@ -40,10 +40,11 @@
 // ----- Rotational motor sensor limits -----
 #define ROTATIONAL_VACTUAL 1000
 #define ROTATIONAL_SENSOR_SKIP_DURATION_MS    300  // Ignore sensor for this duration
-#define ROTATIONAL_HOMING_SENSOR_SKIP_STEPS   300
-#define ROTATIONAL_SENSOR_HOME_STEPS  90*8    // Steps to move clockwise after finding home flag to ensure we are centered inside the home flag
-#define ROTATIONAL_MAX_DURATION_MS    600*8   // Max duration before error
-#define ROTATIONAL_HOMING_MAX_STEPS  600*8
+#define ROTATIONAL_HOMING_ESCAPE_DURATION_MS  500
+#define ROTATIONAL_HOMING_SENSOR_SKIP_DURATION_MS  300
+#define ROTATIONAL_SENSOR_CLEAR_MAX_DURATION_MS  2000
+#define ROTATIONAL_SENSOR_HOME_DURATION_MS  1000
+#define ROTATIONAL_MAX_DURATION_MS    3000 // Max duration before error
 #define MAX_FLAGS_TO_FIND_HOME  12          // Max flags to find home position
 
 // ----- Position-specific centering steps (indexed 0-11) -----
@@ -379,28 +380,21 @@ static void launchRotationalMotorTask(uint8_t stepPin, bool dirHigh, uint8_t pos
 
 static void rotationalHomingTask(void* /*pvParams*/) {
     enableMotors();
-    delayMicroseconds(1000);  // A4988 wake-up time after SLEEP→HIGH
-    digitalWrite(DIR_PIN, LOW);  // Clockwise (DIR LOW)
-    delayMicroseconds(1);         // DIR setup time before first STEP
-
-    pulseIntervalUs = PULSE_INTERVAL_US_ROTATIONAL;  // Ensure we don't underflow in delayMicroseconds()
-
-
     bool stopped = false;
-    // Phase 0: Move clockwise for a few steps to ensure we are not already on a flag (sensor LOW)
-
-        for (uint16_t i = 0; i < ROTATIONAL_HOMING_MAX_STEPS/2; i++) {
-            if (stopRequested) {
-                stopped = true;
-                break;
-            }
-
-            generateStepPulse(ROT_STEP_PIN);
-            delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
+    // Phase 0: Move clockwise for a short duration to ensure we are not
+    // already on a flag.
+    rotdriver.VACTUAL(-ROTATIONAL_VACTUAL);
+    const uint32_t escapeStartMs = millis();
+    while ((millis() - escapeStartMs) < ROTATIONAL_HOMING_ESCAPE_DURATION_MS) {
+        if (stopRequested) {
+            stopped = true;
+            break;
         }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    rotdriver.VACTUAL(0);
 
     bool homeFound = false;
-    uint16_t totalStepCount = 0;
     uint8_t flagCount = 0;  // Count of flag-to-flag transitions
 
     while (flagCount < MAX_FLAGS_TO_FIND_HOME+1) {
@@ -412,21 +406,22 @@ static void rotationalHomingTask(void* /*pvParams*/) {
 
 
 
-        digitalWrite(DIR_PIN, HIGH);  // Counterclockwise (DIR HIGH)
-        // Phase 1: Skip sensor for first homing step count.
-        for (uint16_t i = 0; i < ROTATIONAL_HOMING_SENSOR_SKIP_STEPS; i++) {
+        rotdriver.VACTUAL(ROTATIONAL_VACTUAL);
+        // Phase 1: Skip sensor for the initial duration.
+        const uint32_t skipStartMs = millis();
+        while ((millis() - skipStartMs) < ROTATIONAL_HOMING_SENSOR_SKIP_DURATION_MS) {
             if (stopRequested) {
                 stopped = true;
                 break;
             }
-
-            generateStepPulse(ROT_STEP_PIN);
-            delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
-
+        rotdriver.VACTUAL(0);
         if (stopped) {
             break;
         }
+
+
 
         // Check if HOME flag detected (sensor LOW immediately after skip phase)
         if (digitalRead(OPTICAL_SENSOR_PIN) == LOW) {
@@ -436,7 +431,9 @@ static void rotationalHomingTask(void* /*pvParams*/) {
 
         // Phase 2: Move until we find the next flag (sensor goes LOW)
         bool flagDetected = false;
-        for (uint16_t i = 0; i < ROTATIONAL_HOMING_MAX_STEPS; i++) {
+        const uint32_t searchStartMs = millis();
+        rotdriver.VACTUAL(ROTATIONAL_VACTUAL);
+        while ((millis() - searchStartMs) < ROTATIONAL_MAX_DURATION_MS) {
             if (stopRequested) {
                 stopped = true;
                 break;
@@ -446,11 +443,9 @@ static void rotationalHomingTask(void* /*pvParams*/) {
                 flagDetected = true;
                 break;
             }
-
-            generateStepPulse(ROT_STEP_PIN);
-            delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
-
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
+        rotdriver.VACTUAL(0);
 
         if (stopped) {
             break;
@@ -466,45 +461,42 @@ static void rotationalHomingTask(void* /*pvParams*/) {
         //100 ms delay between flag checks
         delayMicroseconds(100000);
     }
-
+    rotdriver.VACTUAL(0);
 
     // If home found, we will move counterclockwise until optical sensor goes HIGH (to ensure we are past the home flag)
 
     if (homeFound) {
-        pulseIntervalUs = PULSE_INTERVAL_US_HOMING;  // Ensure we don't underflow in delayMicroseconds()
 
-
-        delayMicroseconds(1000000);
-        for (uint16_t i = 0; i < ROTATIONAL_HOMING_MAX_STEPS; i++) {
+        rotdriver.VACTUAL(ROTATIONAL_VACTUAL / 4);
+        const uint32_t clearStartMs = millis();
+        while ((millis() - clearStartMs) < ROTATIONAL_SENSOR_CLEAR_MAX_DURATION_MS) {
             if (stopRequested) {
                 stopped = true;
                 break;
             }
 
             if (digitalRead(OPTICAL_SENSOR_PIN) == HIGH) {
+
                 break;  // We are past the home flag
             }
-
-            generateStepPulse(ROT_STEP_PIN);
-            delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
+        rotdriver.VACTUAL(0);
 
-       // Now we move clockwise for a number of steps equal to ROTATIONAL_SENSOR_HOME_STEPS to ensure we are centered inside the home flag
-        digitalWrite(DIR_PIN, LOW);  // Clockwise (DIR LOW)
-        delayMicroseconds(100);         // DIR setup time before first STEP
-        for (uint16_t i = 0; i < ROTATIONAL_SENSOR_HOME_STEPS; i++) {
+       // Now move clockwise for the centering duration.
+        rotdriver.VACTUAL(-ROTATIONAL_VACTUAL / 4);
+        delayMicroseconds(100);
+        const uint32_t centerStartMs = millis();
+        while ((millis() - centerStartMs) < ROTATIONAL_SENSOR_HOME_DURATION_MS) {
             if (stopRequested) {
                 stopped = true;
                 break;
             }
-            generateStepPulse(ROT_STEP_PIN);
-            delayMicroseconds(pulseIntervalUs - PULSE_WIDTH_US);
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
-
-
     }
-    pulseIntervalUs = PULSE_INTERVAL_US_ROTATIONAL;  // Reset to default for future movements
 
+    rotdriver.VACTUAL(0);
     disableMotors();
     stopRequested = false;
 
@@ -514,7 +506,7 @@ static void rotationalHomingTask(void* /*pvParams*/) {
         } else if (homeFound) {
             statusCharacteristic->setValue("COMPLETE");
         } else {
-            statusCharacteristic->setValue("ERROR: HOME not found after max steps or flags.");
+            statusCharacteristic->setValue("ERROR: HOME not found after max duration or flags.");
         }
         statusCharacteristic->notify();
     }

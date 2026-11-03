@@ -149,7 +149,7 @@ case-insensitively.
 | `MOVEOUTHOME` | Ramp to VACTUAL `-4000` over 500 milliseconds, then move until the out-limit switch |
 | `MOVECLOCKWISE:1` through `MOVECLOCKWISE:12` | Move the rotational motor clockwise to a sensor-defined position using VACTUAL ±750 |
 | `MOVECOUNTERCLOCKWISE:1` through `MOVECOUNTERCLOCKWISE:12` | Move the rotational motor counterclockwise to a sensor-defined position using VACTUAL ±750 |
-| `ROTATIONALHOMING` | Find the rotational home flag |
+| `ROTATIONALHOMING` | Find the rotational home flag using VACTUAL |
 | `STOP` | Request cancellation of the active motor task |
 | `SETVACTUAL:<value>` | Set the VACTUAL magnitude for regular linear movement (`1..10000`, default `1800`) |
 | `SETCURRENT:<mA>` | Set TMC2209 RMS motor current (`100..2000` mA, default `1200`) |
@@ -168,10 +168,12 @@ reached. Homing has a 20,000 millisecond safety timeout; `MOVEINHOME`
 continues inward for 400 milliseconds after reaching the limit. STOP or a
 limit switch is honored immediately during the ramp. Rotational positioning
 uses a separate TMC2209 at UART address `0b01`, fixed at 1200 mA and
-2 microsteps. It uses VACTUAL ±750 for normal movement and one third of that
-speed during sensor clearing and centering. The rotational task's former
-sensor-skip, maximum-travel, and centering step values are interpreted as
-milliseconds; rotational homing remains STEP/DIR based.
+2 microsteps. It uses VACTUAL ±750 for normal positioning and one third of
+that speed during positioning sensor clearing and centering. Rotational
+homing uses VACTUAL ±1000 for escape and flag search, then VACTUAL ±250 for
+sensor clearing and final centering. Its former escape, sensor-skip,
+maximum-search, sensor-clear, and centering step values are interpreted as
+milliseconds. The existing 1-second and 100 ms waits are preserved.
 
 Movement commands are rejected with `WAIT` while another motor task is
 running. `STOP`, fan commands, interval updates, and sensor queries remain
