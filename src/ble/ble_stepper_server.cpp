@@ -9,13 +9,15 @@
 // ----- TMC2209 UART configuration -----
 #define UART_RX_PIN 5
 #define UART_TX_PIN 6
-#define DRIVER_ADDRESS 0b01
+#define ROT_UART_RX_PIN 7
+#define ROT_UART_TX_PIN 9
+#define DRIVER_ADDRESS 0b00
 //#define ROT_DRIVER_ADDRESS 0b01
 #define R_SENSE 0.11f
 
 // ----- Pin configuration -----
-#define ROT_STEP_PIN   9    // Rotational motor STEP
-#define LIN_STEP_PIN   7    // Linear motor STEP
+//#define ROT_STEP_PIN   9    // Rotational motor STEP
+//#define LIN_STEP_PIN   7    // Linear motor STEP
 #define DIR_PIN        21   // Shared direction pin
 #define SLEEP_PIN      20   // Shared sleep/enable pin (active LOW: LOW = enabled, HIGH = sleep)
 #define OUT_LIMIT_PIN   0   // OUT limit switch (active LOW)
@@ -51,7 +53,7 @@
 
 //static const uint16_t POSITION_DURATION_MS[12] = {0, 0,  0,  0, 20, 100,  0,  0,  0, 0,  0,  0 }; //Juice-2
 ///////////////////////////////////////////       1   2   3   4   5   6   7   8   9  10  11  12
-static const uint16_t POSITION_DURATION_MS[12] = {0, 200, 200, 160, 200, 160,160,150, 0, 0, 0,100};   //Juice-1 con driver TMC2209 (same as Juice-2)
+static const uint16_t POSITION_DURATION_MS[12] = {0, 200, 200, 160, 200, 160,160,150, 0, 0, 0, 100};   //Juice-1 con driver TMC2209 (same as Juice-2)
 
 // ----- BLE UUIDs (custom 128-bit) -----
 #define BLE_SERVICE_UUID     "AA000001-1234-1234-1234-1234567890AA"
@@ -72,10 +74,10 @@ static BLECharacteristic* temperatureCharacteristic = nullptr;
 static volatile bool isClientConnected = false;
 
 HardwareSerial &driverSerial = Serial1;
-//HardwareSerial &rotDriverSerial = Serial0;
+HardwareSerial &rotDriverSerial = Serial0;
 TMC2209Stepper driver(&driverSerial, R_SENSE, DRIVER_ADDRESS);
 //TMC2209Stepper rotdriver(&driverSerial, R_SENSE, ROT_DRIVER_ADDRESS);
-TMC2209Stepper rotdriver(&driverSerial, R_SENSE, 0b00); // Using same address for rotational driver
+TMC2208Stepper rotdriver(&rotDriverSerial, R_SENSE);
 
 // ----- Task parameter structs -----
 struct VactualTaskParams {
@@ -90,7 +92,6 @@ struct VactualHomingTaskParams {
 };
 
 struct RotationalMotorTaskParams {
-    uint8_t  stepPin;
     bool     dirHigh;  // true → DIR HIGH, false → DIR LOW
     uint8_t  sensorPin;  // GPIO pin for optical sensor
     uint8_t  position;   // 1-12, selects centering duration from POSITION_DURATION_MS
@@ -101,8 +102,8 @@ struct RotationalMotorTaskParams {
 // ============================================================
 
 static void setupMotorGpio() {
-    pinMode(ROT_STEP_PIN,  OUTPUT);
-    pinMode(LIN_STEP_PIN,  OUTPUT);
+    //pinMode(ROT_STEP_PIN,  OUTPUT);
+    //pinMode(LIN_STEP_PIN,  OUTPUT);
     pinMode(DIR_PIN,       OUTPUT);
     pinMode(SLEEP_PIN,    OUTPUT);
     pinMode(OUT_LIMIT_PIN, INPUT_PULLUP);   // OUT limit switch (active LOW)
@@ -110,8 +111,8 @@ static void setupMotorGpio() {
     pinMode(OPTICAL_SENSOR_PIN, INPUT_PULLUP);  // Optical sensor (active LOW)
     pinMode(FAN_PIN,      OUTPUT);
 
-    digitalWrite(ROT_STEP_PIN, LOW);
-    digitalWrite(LIN_STEP_PIN, LOW);
+    //digitalWrite(ROT_STEP_PIN, LOW);
+    //digitalWrite(LIN_STEP_PIN, LOW);
     digitalWrite(DIR_PIN,      LOW);
     digitalWrite(SLEEP_PIN,    HIGH);   // active LOW → HIGH = sleep/disabled
     digitalWrite(FAN_PIN,     LOW);    // active HIGH → LOW = disabled
@@ -139,7 +140,7 @@ static void setupTmcDriver() {
     driver.pwm_autoscale(true);
     driver.VACTUAL(0);
 
-    //rotDriverSerial.begin(115200, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+    rotDriverSerial.begin(115200, SERIAL_8N1, ROT_UART_RX_PIN, ROT_UART_TX_PIN);
     rotdriver.begin();
     rotdriver.toff(5);
     rotdriver.rms_current(1200);
@@ -371,8 +372,8 @@ static void rotationalMotorTask(void* pvParams) {
     vTaskDelete(NULL);
 }
 
-static void launchRotationalMotorTask(uint8_t stepPin, bool dirHigh, uint8_t position) {
-    auto* params = new RotationalMotorTaskParams{stepPin, dirHigh, OPTICAL_SENSOR_PIN, position};
+static void launchRotationalMotorTask(bool dirHigh, uint8_t position) {
+    auto* params = new RotationalMotorTaskParams{dirHigh, OPTICAL_SENSOR_PIN, position};
     stopRequested = false;
     motorBusy = true;
     xTaskCreate(rotationalMotorTask, "rotationalMotorTask", 2048, params, 1, NULL);
@@ -680,13 +681,13 @@ class CommandCallback : public BLECharacteristicCallbacks {
             int colonIdx = cmd.indexOf(':');
             if (colonIdx >= 0) pos = constrain(cmd.substring(colonIdx + 1).toInt(), 1, 12);
             sendStatus("OK");
-            launchRotationalMotorTask(ROT_STEP_PIN, false, pos);  // DIR LOW  = CW, sensor-aware
+            launchRotationalMotorTask(false, pos);  // DIR LOW  = CW, sensor-aware
         } else if (cmd.startsWith("MOVECOUNTERCLOCKWISE")) {
             uint8_t pos = 1;
             int colonIdx = cmd.indexOf(':');
             if (colonIdx >= 0) pos = constrain(cmd.substring(colonIdx + 1).toInt(), 1, 12);
             sendStatus("OK");
-            launchRotationalMotorTask(ROT_STEP_PIN, true, pos);   // DIR HIGH = CCW, sensor-aware
+            launchRotationalMotorTask(true, pos);   // DIR HIGH = CCW, sensor-aware
         }else if (cmd == "ROTATIONALHOMING") {
             sendStatus("OK");
             launchRotationalHomingTask();  // DIR HIGH = CCW, finds HOME flag
