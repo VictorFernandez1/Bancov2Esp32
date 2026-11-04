@@ -1,5 +1,4 @@
 #include "ble_stepper_server.h"
-
 #include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -10,8 +9,8 @@
 // ----- TMC2209 UART configuration -----
 #define UART_RX_PIN 5
 #define UART_TX_PIN 6
-#define DRIVER_ADDRESS 0b00
-#define ROT_DRIVER_ADDRESS 0b01
+#define DRIVER_ADDRESS 0b01
+//#define ROT_DRIVER_ADDRESS 0b01
 #define R_SENSE 0.11f
 
 // ----- Pin configuration -----
@@ -50,9 +49,9 @@
 // ----- Position-specific centering steps (indexed 0-11) -----
 //static const uint16_t POSITION_DURATION_MS[12] = { 0, 25, 25, 20, 20, 0,  0, 0, 0, 0, 0, 22 }; //Juice-1 con driver A4988
 
-static const uint16_t POSITION_DURATION_MS[12] = {0, 0,  0,  0, 20, 100,  0,  0,  0, 0,  0,  0 }; //Juice-2
-/////////////////////////////////////////// 1   2   3   4   5   6   7   8   9  10  11  12
-//static const uint16_t POSITION_DURATION_MS[12] = {0, 200, 200, 160, 200, 160,160,150, 0, 0, 0,100};   //Juice-1 con driver TMC2209 (same as Juice-2)
+//static const uint16_t POSITION_DURATION_MS[12] = {0, 0,  0,  0, 20, 100,  0,  0,  0, 0,  0,  0 }; //Juice-2
+///////////////////////////////////////////       1   2   3   4   5   6   7   8   9  10  11  12
+static const uint16_t POSITION_DURATION_MS[12] = {0, 200, 200, 160, 200, 160,160,150, 0, 0, 0,100};   //Juice-1 con driver TMC2209 (same as Juice-2)
 
 // ----- BLE UUIDs (custom 128-bit) -----
 #define BLE_SERVICE_UUID     "AA000001-1234-1234-1234-1234567890AA"
@@ -73,8 +72,10 @@ static BLECharacteristic* temperatureCharacteristic = nullptr;
 static volatile bool isClientConnected = false;
 
 HardwareSerial &driverSerial = Serial1;
+//HardwareSerial &rotDriverSerial = Serial0;
 TMC2209Stepper driver(&driverSerial, R_SENSE, DRIVER_ADDRESS);
-TMC2209Stepper rotdriver(&driverSerial, R_SENSE, ROT_DRIVER_ADDRESS);
+//TMC2209Stepper rotdriver(&driverSerial, R_SENSE, ROT_DRIVER_ADDRESS);
+TMC2209Stepper rotdriver(&driverSerial, R_SENSE, 0b00); // Using same address for rotational driver
 
 // ----- Task parameter structs -----
 struct VactualTaskParams {
@@ -138,6 +139,7 @@ static void setupTmcDriver() {
     driver.pwm_autoscale(true);
     driver.VACTUAL(0);
 
+    //rotDriverSerial.begin(115200, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
     rotdriver.begin();
     rotdriver.toff(5);
     rotdriver.rms_current(1200);
