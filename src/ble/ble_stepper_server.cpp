@@ -37,6 +37,8 @@
 #define HOMING_RAMP_DURATION_MS 500
 #define IN_CLOSING_DURATION_MS 100
 #define HOMING_VACTUAL 4000
+#define HOMING_SG_POLL_INTERVAL_MS 1000
+#define HOMING_SG_THRESHOLD 330
 
 // ----- Rotational motor sensor limits -----
 #define ROTATIONAL_VACTUAL 1000
@@ -72,6 +74,9 @@ static volatile uint32_t linearDurationMs = LINEAR_DURATION_MS;
 static BLECharacteristic* statusCharacteristic = nullptr;
 static BLECharacteristic* temperatureCharacteristic = nullptr;
 static volatile bool isClientConnected = false;
+static SemaphoreHandle_t driverMutex = nullptr;
+
+static void sendStatus(const char* msg);
 
 HardwareSerial &driverSerial = Serial1;
 HardwareSerial &rotDriverSerial = Serial0;
@@ -130,7 +135,13 @@ static void generateStepPulse(uint8_t stepPin) {
 static void enableMotors()  { digitalWrite(SLEEP_PIN, LOW);  }
 static void disableMotors() { digitalWrite(SLEEP_PIN, HIGH); }
 
-static void setupTmcDriver() {
+static bool setupTmcDriver() {
+    driverMutex = xSemaphoreCreateMutex();
+    if (driverMutex == nullptr) {
+        Serial.println("ERROR: Could not create TMC2209 mutex");
+        return false;
+    }
+
     driverSerial.begin(115200, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
     driver.begin();
     driver.toff(5);
@@ -148,6 +159,45 @@ static void setupTmcDriver() {
     rotdriver.en_spreadCycle(false);
     rotdriver.pwm_autoscale(true);
     rotdriver.VACTUAL(0);
+    return true;
+}
+
+static void setDriverVactual(int32_t velocity) {
+    xSemaphoreTake(driverMutex, portMAX_DELAY);
+    driver.VACTUAL(velocity);
+    xSemaphoreGive(driverMutex);
+}
+
+static void setDriverCurrent(uint16_t currentMa) {
+    xSemaphoreTake(driverMutex, portMAX_DELAY);
+    driver.rms_current(currentMa);
+    xSemaphoreGive(driverMutex);
+}
+
+static void setDriverMicrosteps(uint16_t microsteps) {
+    xSemaphoreTake(driverMutex, portMAX_DELAY);
+    driver.microsteps(microsteps);
+    xSemaphoreGive(driverMutex);
+}
+
+static uint32_t readDriverSgResult() {
+    xSemaphoreTake(driverMutex, portMAX_DELAY);
+    const uint32_t result = driver.SG_RESULT();
+    xSemaphoreGive(driverMutex);
+    return result;
+
+}
+
+static void sgResultTask(void* /*pvParams*/) {
+    while (true) {
+        if (isClientConnected && statusCharacteristic) {
+            char payload[32] = {0};
+            snprintf(payload, sizeof(payload), "SG_RESULT:%lu",
+                     (unsigned long) readDriverSgResult());
+            sendStatus(payload);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }
 
 // ============================================================
@@ -159,7 +209,7 @@ static void vactualMotorTask(void* pvParams) {
 
     enableMotors();
     const int32_t velocity = params->dirHigh ? vactualMagnitude : -vactualMagnitude;
-    driver.VACTUAL(velocity);
+    setDriverVactual(velocity);
     bool stopped = false;
 
     const uint32_t startMs = millis();
@@ -171,7 +221,7 @@ static void vactualMotorTask(void* pvParams) {
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 
-    driver.VACTUAL(0);
+    setDriverVactual(0);
     disableMotors();
 
     stopRequested = false;
@@ -201,7 +251,21 @@ static void vactualHomingTask(void* pvParams) {
 
     bool stopped = false;
     bool limitReached = false;
+    bool blocked = false;
+    uint32_t blockingSgResult = 0;
     const uint32_t startMs = millis();
+    uint32_t nextSgPollMs = startMs + HOMING_SG_POLL_INTERVAL_MS;
+
+    auto checkForBlockedMovement = [&]() {
+        const uint32_t nowMs = millis();
+        if (static_cast<int32_t>(nowMs - nextSgPollMs) >= 0) {
+            nextSgPollMs += HOMING_SG_POLL_INTERVAL_MS;
+            blockingSgResult = readDriverSgResult();
+            if (blockingSgResult < HOMING_SG_THRESHOLD && blockingSgResult > 0) {
+                blocked = true;
+            }
+        }
+    };
 
     while ((millis() - startMs) < HOMING_RAMP_DURATION_MS) {
         if (stopRequested) {
@@ -212,21 +276,25 @@ static void vactualHomingTask(void* pvParams) {
             limitReached = true;
             break;
         }
+        checkForBlockedMovement();
+        if (blocked) {
+            break;
+        }
 
         const uint32_t rampElapsedMs = millis() - startMs;
         const int32_t rampVelocity = static_cast<int32_t>(
             (static_cast<int64_t>(targetVelocity) * rampElapsedMs)
             / HOMING_RAMP_DURATION_MS
         );
-        driver.VACTUAL(rampVelocity);
+        setDriverVactual(rampVelocity);
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 
-    if (!stopped && !limitReached) {
-        driver.VACTUAL(targetVelocity);
+    if (!stopped && !blocked && !limitReached) {
+        setDriverVactual(targetVelocity);
     }
 
-    while ((millis() - startMs) < HOMING_MAX_DURATION_MS) {
+    while (!blocked && (millis() - startMs) < HOMING_MAX_DURATION_MS) {
         if (stopRequested) {
             stopped = true;
             break;
@@ -235,27 +303,41 @@ static void vactualHomingTask(void* pvParams) {
             limitReached = true;
             break;
         }
+        checkForBlockedMovement();
+        if (blocked) {
+            break;
+        }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 
-    if (!stopped && limitReached && params->closeAfterLimit) {
-        driver.VACTUAL(targetVelocity);
+    if (!stopped && !blocked && limitReached && params->closeAfterLimit) {
+        setDriverVactual(targetVelocity);
         const uint32_t closeStartMs = millis();
         while ((millis() - closeStartMs) < IN_CLOSING_DURATION_MS) {
             if (stopRequested) {
                 stopped = true;
                 break;
             }
+            checkForBlockedMovement();
+            if (blocked) {
+                break;
+            }
             vTaskDelay(pdMS_TO_TICKS(1));
         }
     }
 
-    driver.VACTUAL(0);
+    setDriverVactual(0);
     disableMotors();
     stopRequested = false;
 
     if (statusCharacteristic) {
-        if (stopped) {
+        if (blocked) {
+            char payload[80] = {0};
+            snprintf(payload, sizeof(payload),
+                     "ERROR: Something is blocking the movement. SG_RESULT:%lu",
+                     (unsigned long) blockingSgResult);
+            statusCharacteristic->setValue(payload);
+        } else if (stopped) {
             statusCharacteristic->setValue("STOPPED");
         } else if (limitReached) {
             statusCharacteristic->setValue("COMPLETE");
@@ -277,7 +359,7 @@ static void launchVactualHomingTask(bool dirHigh, uint8_t limitPin, bool closeAf
     auto* params = new VactualHomingTaskParams{dirHigh, limitPin, closeAfterLimit};
     stopRequested = false;
     motorBusy = true;
-    xTaskCreate(vactualHomingTask, "vactualHomingTask", 2048, params, 1, NULL);
+    xTaskCreate(vactualHomingTask, "vactualHomingTask", 4096, params, 1, NULL);
 }
 
 // ============================================================
@@ -593,7 +675,7 @@ class CommandCallback : public BLECharacteristicCallbacks {
             int32_t val = cmd.substring(11).toInt();
             if (val >= 100 && val <= 2000) {
                 motorCurrentMa = (uint16_t) val;
-                driver.rms_current(motorCurrentMa);
+                setDriverCurrent(motorCurrentMa);
                 Serial.printf("Motor current set to %u mA\n", motorCurrentMa);
                 sendStatus("OK");
             } else {
@@ -607,7 +689,7 @@ class CommandCallback : public BLECharacteristicCallbacks {
             int32_t val = cmd.substring(14).toInt();
             if (val >= 0 && val <= 256) {
                 motorMicrosteps = (uint16_t) val;
-                driver.microsteps(motorMicrosteps);
+                setDriverMicrosteps(motorMicrosteps);
                 Serial.printf("Microsteps set to %u\n", motorMicrosteps);
                 sendStatus("OK");
             } else {
@@ -721,7 +803,11 @@ class ConnectionCallback : public BLEServerCallbacks {
 
 void initBleStepperServer() {
     setupMotorGpio();
-    setupTmcDriver();
+    if (!setupTmcDriver()) {
+        Serial.println("ERROR: TMC driver initialization aborted");
+        return;
+    }
+    //xTaskCreate(sgResultTask, "sgResultTask", 2048, NULL, 1, NULL);
 
     BLEDevice::init("ESP32_STEPPER");
 

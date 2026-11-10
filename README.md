@@ -22,6 +22,7 @@ The firmware advertises as `ESP32_STEPPER`.
 - Emergency stop command.
 - NTC temperature measurement with a 10-sample moving average.
 - Temperature and motor-status notifications over BLE.
+- Linear-driver SG_RESULT notifications once per second.
 - A desktop UI with motor controls, status logging, and a 120-second
   temperature plot.
 
@@ -190,6 +191,10 @@ The status characteristic sends text notifications such as:
 - `INVALID` — command or interval was invalid.
 - `SENSOR:LOW` or `SENSOR:HIGH` — optical sensor state.
 - `ERROR: ...` — a limit or rotational position could not be reached.
+- `SG_RESULT:<value>` — the linear TMC2209 StallGuard result, published once
+  per second while a BLE client is connected.
+- `ERROR: Something is blocking the movement. SG_RESULT:<value>` — linear
+  homing detected an SG_RESULT below 300 while polling once per second.
 
 Temperature notifications are formatted as text such as `23.47 C`.
 
